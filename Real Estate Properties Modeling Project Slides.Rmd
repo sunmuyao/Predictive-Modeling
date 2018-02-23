@@ -1,0 +1,427 @@
+---
+title: "Real Estate Properties Modeling Project Slides"
+subtitle: <small>"That's what I love about these GAMs, man. My RMSE keeps getting lower and the coverage stays the same." --JB<small>
+author: "Beau Coker, Muyao Sun, Jiahui Wang, Huijia Yu"
+date: "4/30/2017"
+output: beamer_presentation
+fontsize: 5pt
+---
+
+```{r, include=FALSE}
+suppressMessages(library(dplyr))
+suppressMessages(library(mgcv))
+suppressMessages(library(ggplot2))
+suppressMessages(library(reshape2))
+suppressMessages(library(glmnet))
+suppressMessages(library(gridExtra))
+suppressMessages(library(randomForest))
+```
+
+```{r, include=FALSE}
+clean_df <- function(df, na_to_none, na_to_zero) {
+  
+  # Change to log price
+  df$price <- log(df$price)
+  
+  # Garage Year Built
+  df <- df %>%
+    mutate(Garage.Era = as.factor(cut(Garage.Yr.Blt, breaks=5, labels=FALSE))) %>%
+    select(-Garage.Yr.Blt)
+  
+  
+  # For features with absense of level (e.g., no garage)
+  # replace NA with "NONE"
+  for (i in 1:length(na_to_none)) {
+    levels_before <- levels(df[[na_to_none[i]]])
+    df[[na_to_none[i]]] <- addNA(df[[na_to_none[i]]])
+    levels(df[[na_to_none[i]]]) <- c(levels_before, "None")
+  }
+  
+  # NAs to 0
+  for (i in 1:length(na_to_zero)) {
+    id_na <- is.na(df[[na_to_zero[i]]])
+    df[[na_to_zero[i]]][id_na] <- 0
+  }
+  
+  # Fix specific ""
+  df$Mas.Vnr.Type[df$Mas.Vnr.Type==""] <- "None"
+  df$Mas.Vnr.Type <- factor(df$Mas.Vnr.Type)
+  
+  df$Electrical[df$Electrical==""] <- "SBrkr"
+  df$Electrical <- factor(df$Electrical)
+  
+  df$Bsmt.Exposure[df$Bsmt.Exposure==""] <- "No"
+  df$Bsmt.Exposure <- factor(df$Bsmt.Exposure)
+  
+  df$BsmtFin.Type.2[df$BsmtFin.Type.2==""] <- "Unf"
+  df$BsmtFin.Type.2 <- factor(df$BsmtFin.Type.2)
+  
+  df$Garage.Finish[df$Garage.Finish==""] <- "Unf"
+  df$Garage.Finish <- factor(df$Garage.Finish)
+  
+  ### Add/Combine new columns
+  df <- df %>%
+    mutate(N.Floors = ifelse(X2nd.Flr.SF>0,2,1)) %>%
+    mutate(Total.SF = X1st.Flr.SF + X2nd.Flr.SF + Total.Bsmt.SF) %>%
+    mutate(Total.Bsmt.SF = ifelse(Total.Bsmt.SF>0, TRUE, FALSE)) %>%
+    mutate(Bsmt = ifelse(Total.Bsmt.SF>0,TRUE,FALSE)) %>% 
+    mutate(Low.Qual.Fin = ifelse(Low.Qual.Fin.SF>0,TRUE,FALSE)) %>%
+    mutate(Porch.SF = Wood.Deck.SF + Open.Porch.SF + Enclosed.Porch + 
+             X3Ssn.Porch + Screen.Porch) %>%
+    mutate(Porch = ifelse(Porch.SF>0,TRUE,FALSE)) %>%
+    mutate(Pool = ifelse(Pool.Area>0,TRUE,FALSE)) %>%
+    mutate(Full.Bath = Full.Bath + Bsmt.Full.Bath) %>%
+    mutate(Half.Bath = Half.Bath + Bsmt.Half.Bath)
+  
+  ### Remove columns
+  df <- df %>%
+    select(-area, -X1st.Flr.SF, -X2nd.Flr.SF, -Total.Bsmt.SF, -TotalSq, -Low.Qual.Fin.SF,
+           -Wood.Deck.SF,-Open.Porch.SF,-Enclosed.Porch,-X3Ssn.Porch,-Screen.Porch,
+           -Bsmt.Full.Bath, -Bsmt.Half.Bath) 
+  
+  
+  # Remove all unused "" levels
+  id.fac <- which(sapply(df,is.factor))
+  for (i in id.fac) {
+    df[[i]] <- factor(df[[i]])
+  }
+  
+  return(df)
+}
+```
+
+
+```{r, include=FALSE}
+load("ames_train.Rdata")
+load("ames_test.Rdata")
+load("ames_validation.Rdata")
+
+# For features with absense of level (e.g., no garage)
+# replace NA with "NONE"
+na_to_none <- c("Alley",
+                "Bsmt.Qual",
+                "Bsmt.Exposure",
+                "Bsmt.Cond",
+                "Bsmt.Exposure",
+                "BsmtFin.Type.1",
+                "BsmtFin.Type.2",
+                "Fireplace.Qu",
+                "Garage.Type",
+                "Garage.Finish",  
+                "Garage.Qual",     
+                "Garage.Cond",
+                "Garage.Era", # New variable
+                "Pool.QC",
+                "Fence",
+                "Misc.Feature")
+
+na_to_zero <- c("Lot.Frontage",
+                "Mas.Vnr.Area",
+                "Bsmt.Full.Bath",
+                "Bsmt.Half.Bath")
+
+ames_all <- clean_df(
+  rbind(
+    mutate(ames_train,dataset="train"),
+    mutate(ames_test,dataset="test"),
+    mutate(ames_validation,dataset="validation")
+  ),na_to_none,na_to_zero
+)
+
+ames_train <- ames_all %>% filter(dataset=="train") %>% select(-dataset)
+ames_test <- ames_all %>% filter(dataset=="test") %>% select(-dataset)
+ames_validation <- ames_all %>% filter(dataset=="validation") %>% select(-dataset, -price)
+```
+
+```{r, include=FALSE}
+### Ordinal Factors to Numeric
+
+
+ord_to_num_Ex_Po = function(x){
+  # For factors with "Ex"   "Fa"   "Gd"   "Po"   "TA"   
+  levels(x) <- c("Ex"=5, "Fa"=3, "Gd"=4, "Po"=1, "TA"=2)
+  return (as.numeric(as.character(x)))
+}
+
+ord_to_num_Ex_NA = function(x) {
+  # For factors with "Ex"   "Fa"   "Gd"   "Po"   "TA"   "None"
+  levels(x) <- c("Ex"=6, "Fa"=4, "Gd"=5, "Po"=2, "TA"=3, "None"=1)
+  return (as.numeric(as.character(x)))
+}
+
+
+#turning ordinal variables into numeric
+
+ordinal_to_num = function(df, Ex_Po, Ex_NA){
+  ### Generic ones first 
+  for (i in 1:length(Ex_Po)) {
+    df[[Ex_Po[i]]] <- ord_to_num_Ex_Po(df[[Ex_Po[i]]])
+  }
+  for (i in 1:length(Ex_NA)) {
+    df[[Ex_NA[i]]] <- ord_to_num_Ex_NA(df[[Ex_NA[i]]])
+  }
+  
+
+  ### Specific ones
+  levels(df$Bsmt.Exposure) <- c("Av"=4, "Gd"=5, "Mn"=3, "No"=2, "None"=1)
+  df$Bsmt.Exposure<- as.numeric(as.character(df$Bsmt.Exposure))
+  
+  levels(df$BsmtFin.Type.1) <- c("ALQ"=6, "BLQ"=5, "GLQ"=7, "LwQ"=3, "Rec"=4, "Unf"=2, "None"=1)
+  df$BsmtFin.Type.1<- as.numeric(as.character(df$BsmtFin.Type.1))
+  
+  levels(df$BsmtFin.Type.2) <- c("ALQ"=6, "BLQ"=5, "GLQ"=7, "LwQ"=3, "Rec"=4, "Unf"=2, "None"=1)
+  df$BsmtFin.Type.2<- as.numeric(as.character(df$BsmtFin.Type.2))
+  
+  levels(df$Garage.Finish) <- c("Fin"=4,  "RFn"=3,  "Unf"=2,  "None"=1)
+  df$Garage.Finish<- as.numeric(as.character(df$Garage.Finish))
+  
+  levels(df$Garage.Finish) <- c("Ex"=5, "Fa"=3, "Gd"=4, "TA"=2, "None"=1)
+  df$Garage.Finish<- as.numeric(as.character(df$Garage.Finish))
+  
+  
+  levels(df$Lot.Shape)<- c(3, 2, 1, 4)
+  df$Lot.Shape<- as.numeric(as.character(df$Lot.Shape))
+  
+  #also missing ELO factor
+  levels(df$Utilities)<- c(4, 2, 3, 1)
+  df$Utilities<- as.numeric(as.character(df$Utilities))
+  
+  levels(df$Land.Slope)<- c(3, 2, 1)
+  df$Land.Slope<- as.numeric(as.character(df$Land.Slope))
+  
+  #because no "Po" values in the training data
+  levels(df$Exter.Qual)<- c(5, 2, 4, 3, 1)
+  df$Exter.Qual<- as.numeric(as.character(df$Exter.Qual))
+  
+  #levels(df$Functional)<- c(4, 3, 7, 6, 5, 1, 2, 8)
+  #df$Functional<- as.numeric(as.character(df$Functional))
+  
+  df$Paved.Drive<- as.numeric(df$Paved.Drive)
+  return (df)
+}
+
+Ex_Po <- c("Exter.Cond","Heating.QC", "Kitchen.Qual")
+Ex_NA <- c("Bsmt.Qual","Bsmt.Cond","Fireplace.Qu", "Garage.Qual", "Garage.Cond")
+
+ames_train<- ordinal_to_num(ames_train, Ex_Po, Ex_NA)
+ames_test<- ordinal_to_num(ames_test, Ex_Po, Ex_NA)
+ames_validation<- ordinal_to_num(ames_validation, Ex_Po, Ex_NA)
+```
+
+
+## Location, location, location {.smaller}
+
+```{r, echo=FALSE}
+### Neighborhood boxplots
+
+df_plot <- ames_train %>% select(price, Neighborhood)
+
+# Order neighborhoods by mean price
+lvl.ordered <- df_plot %>%
+  group_by(Neighborhood) %>%
+  dplyr::summarize(mean_price = mean(price)) %>%
+  arrange(mean_price) %>%
+  .[[1]]
+
+df_plot$Neighborhood <- factor(df_plot$Neighborhood, levels=lvl.ordered)
+
+ggplot(df_plot, aes(y=price, x=Neighborhood)) +
+  geom_boxplot() +
+  coord_flip() +
+  theme_bw() +
+  #ggtitle("The 3 Rules of Real Estate: Location, Location, Location") +
+  ylab("Log Price")
+```
+
+This motivates treating `Neighborhood` as a random effect.
+
+## Quality scores are mostly linear {.smaller}
+
+\scriptsize
+A number of features are either absent or have an ordinal quality score. While there is no scale to the quality scores, their relationship to average price is often linear anyway, so treating them as numerical isn't so far-fetched.
+
+```{r, echo=FALSE}
+df_plot <- ames_train %>% select(price, Fireplace.Qu, Exter.Qual, Bsmt.Qual, Garage.Finish, BsmtFin.Type.1, BsmtFin.Type.2)
+
+# Reshape to wide format
+dfmelt <- melt(df_plot, measure.vars=setdiff(colnames(df_plot),"price"), value.name = "Score")
+
+
+ggplot(dfmelt, aes(y=price,x=Score))+
+  geom_point(size=.7, alpha=.2) +
+  stat_smooth(method = "lm", col = "red") +
+  facet_wrap( ~ variable, ncol=2) +
+  ylab("Log Price") +
+  xlab("Quality Score") +
+  #ggtitle("Quality scores are mostly linear") +
+  scale_x_continuous(breaks=1:7,label=c("None","Q1\n(Lowest Qual)", "Q2","Q3","Q4","Q5","Q6\n(Highest Qual)"))
+```
+
+## PCA
+
+```{r, cache=TRUE, include=FALSE}
+modgam = gam(formula = price ~ 
+               s(Total.SF,k=20) + 
+               Overall.Qual + 
+               Total.SF:Overall.Qual+
+               s(Year.Built,k=10) + 
+               Overall.Cond + 
+               s(Bsmt.Unf.SF, k=10) + 
+               s(Neighborhood,bs='re') + 
+               s(Garage.Area, k=10) + 
+               Fireplace.Qu + 
+               s(Lot.Area, k=10) + 
+               Central.Air + 
+               s(Year.Remod.Add, k=10) + 
+               Bldg.Type:Central.Air+
+               Bldg.Type:Lot.Area+
+               Bldg.Type+
+               BsmtFin.SF.2 + 
+               BsmtFin.SF.1 + 
+               Functional+
+               Condition.1 + 
+               Bsmt.Exposure+
+               Full.Bath + 
+               Full.Bath:Overall.Qual+
+               Paved.Drive +
+               Exter.Qual:Overall.Qual+
+               Exter.Qual+
+               N.Floors+
+               Porch:Porch.SF+
+               Kitchen.Qual+
+               s(Yr.Sold, bs="re"),
+             data=ames_train)
+```
+
+```{r PCA, echo=FALSE}
+numeric = which(sapply(ames_train, is.numeric))
+interaction = c("Overall.Qual", "Total.SF", "Lot.Area", "Full.Bath", "Exter.Qual", "Porch.SF")
+splines = c("Total.SF", "Year.Built", "Bsmt.Unf.SF", "Garage.Area", "Lot.Area","Year.Remod.Add", "Yr.Sold")
+linear = c("Overall.Cond", "Fireplace.Qu", "BsmtFin.SF.2", "BsmtFin.SF.1","Bsmt.Exposure", "Full.Bath","Paved.Drive", "Exter.Qual","N.Floors", "Kitchen.Qual")
+pca = prcomp(ames_train[numeric][,-c(1,2)], scale. = TRUE)
+#plot(pca, type="l")
+pcanames = names(pca$rotation[,1])
+type = factor(sapply(pcanames, function(x){
+  if(is.element(x,interaction)){return ("Interaction")}
+  else if(is.element(x,splines)){return ("Spline")}
+  else if(is.element(x,linear)){return ("Linear")}
+  else{return ("Not in model")}
+}))
+
+
+pcadf = data.frame(variables = pcanames, y = pca$rotation[,1], type = type)
+ggplot(data = pcadf, aes(x=variables, y=y, fill = type))+
+  geom_bar(stat="identity")+ coord_flip() + ggtitle("PCA on numerical predictors") +
+  ylab("Weight in the first principal component")
+```
+
+
+## GAM
+
+
+```{r, echo=FALSE}
+gamcoef <- coef(modgam)
+
+id_neighborhood <- sapply(names(gamcoef), function(x) grepl("s\\(N",x) )
+
+table.coef.neighborhood <- as.matrix(gamcoef[id_neighborhood])
+rownames(table.coef.neighborhood) <- levels(ames_train$Neighborhood)
+
+plot(table.coef.neighborhood, 
+     ames_train %>% group_by(Neighborhood) %>% summarize(mean(price)) %>% .[[2]],
+     xlab="Neighborhood random effect",
+     ylab="Neighborhood average price",
+     main="Random effects and average prices by neighborhood")
+
+text(.34, 12.5, "Green Hills", col='red')
+```
+
+
+
+## Overvalued / Undervalued
+
+
+
+```{r, include=FALSE}
+# Predictions
+predgam.train <- exp(predict(modgam))
+predgam.test <- exp(predict(modgam, newdata=ames_test))
+
+# Dataframe of predictions
+pred.train <-  data.frame(prediction=predgam.train, 
+                          actual=exp(ames_train$price),
+                          resid=exp(ames_train$price) - predgam.train,
+                          PID = ames_train$PID)
+
+pred.test <-  data.frame(prediction=predgam.test, 
+                         actual=exp(ames_test$price),
+                         resid=exp(ames_test$price)-predgam.test,
+                         PID = ames_test$PID)
+
+
+```
+
+
+```{r, include=FALSE}
+# Top 10 over/undervalued
+top_over <- pred.train %>%
+  arrange(desc(resid)) %>%
+  slice(1:10) %>%
+  left_join(ames_train, by="PID")
+
+
+top_under <- pred.train %>%
+  arrange(resid) %>%
+  slice(1:10) %>%
+  left_join(ames_train, by="PID")
+```
+
+
+
+
+```{r, echo=FALSE, warnings=FALSE, messages=FALSE}
+df_over <- top_over %>%
+  select(PID, actual, prediction) %>%
+  mutate(diff = actual-prediction)
+
+PID_order <- arrange(df_over,desc(diff))$PID
+
+df_over <- melt(df_over, measure.vars = c("actual","prediction"), variable.name = "valuation")
+
+df_over$PID <- factor(df_over$PID, levels = PID_order)
+
+p_over <- ggplot(data = arrange(df_over,valuation), aes(x = as.factor(PID), y = value, fill=valuation)) + 
+  geom_bar(stat = "identity", position="dodge")+
+  ylab("Actual/Predicted Price")+
+  xlab("PID") +
+  ggtitle("Top Ten Overvalued Houses")+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))+
+  theme(legend.justification = c(1,0), legend.position=c(1,0))
+
+
+df_under <- top_under %>%
+  select(PID, actual, prediction) %>%
+  mutate(diff = actual-prediction)
+
+PID_order <- arrange(df_under,desc(diff))$PID
+
+df_under <- melt(df_under, measure.vars = c("actual","prediction"), variable.name = "valuation")
+
+df_under$PID <- factor(df_under$PID, levels = PID_order)
+
+p_under <- suppressWarnings(ggplot(data = arrange(df_under,valuation), aes(x = as.factor(PID), y = value, fill=valuation)) + 
+  geom_bar(stat = "identity", position="dodge")+
+  ylab("")+
+  xlab("PID") +
+  ggtitle("Top Ten Overvalued Houses")+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))+
+  theme(legend.justification = c(1,0), legend.position=c(1,0)))
+
+grid.arrange(p_over, p_under, ncol=2)
+```
+
+
+
+
+
+

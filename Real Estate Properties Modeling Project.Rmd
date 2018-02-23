@@ -1,0 +1,738 @@
+---
+title: "Real Estate Properties Modeling Project"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+## 1. Exploratory data analysis
+
+```{r}
+suppressMessages(library(dplyr))
+suppressMessages(library(mgcv))
+suppressMessages(library(ggplot2))
+suppressMessages(library(reshape2))
+suppressMessages(library(glmnet))
+suppressMessages(library(gridExtra))
+suppressMessages(library(randomForest))
+```
+
+### Data processing
+
+Here are a few notes on our data processing / cleaning:
+
+ * We tried to combine related features (and then drop the components). For example, we created a new variable `Porch.SF` equal to the sum of all the sum of all types of porch or deck square footage. Then, we also created an indicator variable for the presense of a porch. Other examples include total square footage and bathrooms (above ground plus basement bathrooms).
+  * A number of factor levels were coded as `NA` when they really should be a separate level "None" (e.g., `Bsmt.Qual` should be "None" if there is no basement. The value is not missing).
+  * Similarly, a number of features included `NA` when they really should be 0 (e.g., notice `Lot.Frontage` includes `NA` values but the minimum value is above zero, indicating `NA` values are probably 0).
+  * A common problem is an ordinal feature that may or may not exist. How should `Bsmt.Qual=Poor` be weighed against a house without a basement? Moreover, is the difference between a quality score of, say, 2 and 1 the same as the differece between a score of 3 and 2? We delt with this in a couple ways:
+   - For a variable like `Garage.Yr.Blt`, the data can be treated as continous for houses with garages, but not all houses have garages. So, we binned the year built into a few groups (in this case, 5) and then added a separate level that indicated there was no garage.
+   - For most of these variables, we noticed that the relationship with price was indeed fairly linear. That is, for example, the difference in average prices for a quality score of 2 vs 1 is about the same as the difference for a score of 3 vs 2. And the absense a feature usually corresponds to the lowest average price. We show this in our EDA below. Therefore, we decided to treat these variables as numeric (we experimented with them as factors, but found that it didn't work as well for our model).
+
+```{r}
+clean_df <- function(df, na_to_none, na_to_zero) {
+  
+  # Change to log price
+  df$price <- log(df$price)
+  
+  # Garage Year Built
+  df <- df %>%
+    mutate(Garage.Era = as.factor(cut(Garage.Yr.Blt, breaks=5, labels=FALSE))) %>%
+    select(-Garage.Yr.Blt)
+  
+  
+  # For features with absense of level (e.g., no garage)
+  # replace NA with "NONE"
+  for (i in 1:length(na_to_none)) {
+    levels_before <- levels(df[[na_to_none[i]]])
+    df[[na_to_none[i]]] <- addNA(df[[na_to_none[i]]])
+    levels(df[[na_to_none[i]]]) <- c(levels_before, "None")
+  }
+  
+  # NAs to 0
+  for (i in 1:length(na_to_zero)) {
+    id_na <- is.na(df[[na_to_zero[i]]])
+    df[[na_to_zero[i]]][id_na] <- 0
+  }
+  
+  # Fix specific ""
+  df$Mas.Vnr.Type[df$Mas.Vnr.Type==""] <- "None"
+  df$Mas.Vnr.Type <- factor(df$Mas.Vnr.Type)
+  
+  df$Electrical[df$Electrical==""] <- "SBrkr"
+  df$Electrical <- factor(df$Electrical)
+  
+  df$Bsmt.Exposure[df$Bsmt.Exposure==""] <- "No"
+  df$Bsmt.Exposure <- factor(df$Bsmt.Exposure)
+  
+  df$BsmtFin.Type.2[df$BsmtFin.Type.2==""] <- "Unf"
+  df$BsmtFin.Type.2 <- factor(df$BsmtFin.Type.2)
+  
+  df$Garage.Finish[df$Garage.Finish==""] <- "Unf"
+  df$Garage.Finish <- factor(df$Garage.Finish)
+  
+  ### Add/Combine new columns
+  df <- df %>%
+    mutate(N.Floors = ifelse(X2nd.Flr.SF>0,2,1)) %>%
+    mutate(Total.SF = X1st.Flr.SF + X2nd.Flr.SF + Total.Bsmt.SF) %>%
+    mutate(Total.Bsmt.SF = ifelse(Total.Bsmt.SF>0, TRUE, FALSE)) %>%
+    mutate(Bsmt = ifelse(Total.Bsmt.SF>0,TRUE,FALSE)) %>% 
+    mutate(Low.Qual.Fin = ifelse(Low.Qual.Fin.SF>0,TRUE,FALSE)) %>%
+    mutate(Porch.SF = Wood.Deck.SF + Open.Porch.SF + Enclosed.Porch + 
+             X3Ssn.Porch + Screen.Porch) %>%
+    mutate(Porch = ifelse(Porch.SF>0,TRUE,FALSE)) %>%
+    mutate(Pool = ifelse(Pool.Area>0,TRUE,FALSE)) %>%
+    mutate(Full.Bath = Full.Bath + Bsmt.Full.Bath) %>%
+    mutate(Half.Bath = Half.Bath + Bsmt.Half.Bath)
+  
+  ### Remove columns
+  df <- df %>%
+    select(-area, -X1st.Flr.SF, -X2nd.Flr.SF, -Total.Bsmt.SF, -TotalSq, -Low.Qual.Fin.SF,
+           -Wood.Deck.SF,-Open.Porch.SF,-Enclosed.Porch,-X3Ssn.Porch,-Screen.Porch,
+           -Bsmt.Full.Bath, -Bsmt.Half.Bath) 
+  
+  
+  # Remove all unused "" levels
+  id.fac <- which(sapply(df,is.factor))
+  for (i in id.fac) {
+    df[[i]] <- factor(df[[i]])
+  }
+  
+  return(df)
+}
+```
+
+
+```{r}
+load("ames_train.Rdata")
+load("ames_test.Rdata")
+load("ames_validation.Rdata")
+
+# For features with absense of level (e.g., no garage)
+# replace NA with "NONE"
+na_to_none <- c("Alley",
+                "Bsmt.Qual",
+                "Bsmt.Exposure",
+                "Bsmt.Cond",
+                "Bsmt.Exposure",
+                "BsmtFin.Type.1",
+                "BsmtFin.Type.2",
+                "Fireplace.Qu",
+                "Garage.Type",
+                "Garage.Finish",  
+                "Garage.Qual",     
+                "Garage.Cond",
+                "Garage.Era", # New variable
+                "Pool.QC",
+                "Fence",
+                "Misc.Feature")
+
+na_to_zero <- c("Lot.Frontage",
+                "Mas.Vnr.Area",
+                "Bsmt.Full.Bath",
+                "Bsmt.Half.Bath")
+
+ames_all <- clean_df(
+  rbind(
+    mutate(ames_train,dataset="train"),
+    mutate(ames_test,dataset="test"),
+    mutate(ames_validation,dataset="validation")
+  ),na_to_none,na_to_zero
+)
+
+ames_train <- ames_all %>% filter(dataset=="train") %>% select(-dataset)
+ames_test <- ames_all %>% filter(dataset=="test") %>% select(-dataset)
+ames_validation <- ames_all %>% filter(dataset=="validation") %>% select(-dataset, -price)
+```
+
+```{r}
+### Ordinal Factors to Numeric
+
+
+ord_to_num_Ex_Po = function(x){
+  # For factors with "Ex"   "Fa"   "Gd"   "Po"   "TA"   
+  levels(x) <- c("Ex"=5, "Fa"=3, "Gd"=4, "Po"=1, "TA"=2)
+  return (as.numeric(as.character(x)))
+}
+
+ord_to_num_Ex_NA = function(x) {
+  # For factors with "Ex"   "Fa"   "Gd"   "Po"   "TA"   "None"
+  levels(x) <- c("Ex"=6, "Fa"=4, "Gd"=5, "Po"=2, "TA"=3, "None"=1)
+  return (as.numeric(as.character(x)))
+}
+
+
+#turning ordinal variables into numeric
+
+ordinal_to_num = function(df, Ex_Po, Ex_NA){
+  ### Generic ones first 
+  for (i in 1:length(Ex_Po)) {
+    df[[Ex_Po[i]]] <- ord_to_num_Ex_Po(df[[Ex_Po[i]]])
+  }
+  for (i in 1:length(Ex_NA)) {
+    df[[Ex_NA[i]]] <- ord_to_num_Ex_NA(df[[Ex_NA[i]]])
+  }
+  
+
+  ### Specific ones
+  levels(df$Bsmt.Exposure) <- c("Av"=4, "Gd"=5, "Mn"=3, "No"=2, "None"=1)
+  df$Bsmt.Exposure<- as.numeric(as.character(df$Bsmt.Exposure))
+  
+  levels(df$BsmtFin.Type.1) <- c("ALQ"=6, "BLQ"=5, "GLQ"=7, "LwQ"=3, "Rec"=4, "Unf"=2, "None"=1)
+  df$BsmtFin.Type.1<- as.numeric(as.character(df$BsmtFin.Type.1))
+  
+  levels(df$BsmtFin.Type.2) <- c("ALQ"=6, "BLQ"=5, "GLQ"=7, "LwQ"=3, "Rec"=4, "Unf"=2, "None"=1)
+  df$BsmtFin.Type.2<- as.numeric(as.character(df$BsmtFin.Type.2))
+  
+  levels(df$Garage.Finish) <- c("Fin"=4,  "RFn"=3,  "Unf"=2,  "None"=1)
+  df$Garage.Finish<- as.numeric(as.character(df$Garage.Finish))
+  
+  levels(df$Garage.Finish) <- c("Ex"=5, "Fa"=3, "Gd"=4, "TA"=2, "None"=1)
+  df$Garage.Finish<- as.numeric(as.character(df$Garage.Finish))
+  
+  
+  levels(df$Lot.Shape)<- c(3, 2, 1, 4)
+  df$Lot.Shape<- as.numeric(as.character(df$Lot.Shape))
+  
+  #also missing ELO factor
+  levels(df$Utilities)<- c(4, 2, 3, 1)
+  df$Utilities<- as.numeric(as.character(df$Utilities))
+  
+  levels(df$Land.Slope)<- c(3, 2, 1)
+  df$Land.Slope<- as.numeric(as.character(df$Land.Slope))
+  
+  #because no "Po" values in the training data
+  levels(df$Exter.Qual)<- c(5, 2, 4, 3, 1)
+  df$Exter.Qual<- as.numeric(as.character(df$Exter.Qual))
+  
+  #levels(df$Functional)<- c(4, 3, 7, 6, 5, 1, 2, 8)
+  #df$Functional<- as.numeric(as.character(df$Functional))
+  
+  df$Paved.Drive<- as.numeric(df$Paved.Drive)
+  return (df)
+}
+
+Ex_Po <- c("Exter.Cond","Heating.QC", "Kitchen.Qual")
+Ex_NA <- c("Bsmt.Qual","Bsmt.Cond","Fireplace.Qu", "Garage.Qual", "Garage.Cond")
+
+ames_train<- ordinal_to_num(ames_train, Ex_Po, Ex_NA)
+ames_test<- ordinal_to_num(ames_test, Ex_Po, Ex_NA)
+ames_validation<- ordinal_to_num(ames_validation, Ex_Po, Ex_NA)
+```
+
+
+
+```{r PCA}
+numeric = which(sapply(ames_train, is.numeric))
+pca = prcomp(ames_train[numeric][,-c(1,2)], scale. = TRUE)
+plot(pca, type="l")
+ggplot(data = data.frame(variables = names(pca$rotation[,1]), y = pca$rotation[,1]), aes(x=variables, y=y))+
+geom_bar(stat="identity")+ coord_flip() + ggtitle("PCA on numerical predictors") +
+  ylab("Weight in the first principal component")
+```
+
+```{r}
+### Neighborhood boxplots
+
+df_plot <- ames_train %>% select(price, Neighborhood)
+
+# Order neighborhoods by mean price
+lvl.ordered <- df_plot %>%
+  group_by(Neighborhood) %>%
+  dplyr::summarize(mean_price = mean(price)) %>%
+  arrange(mean_price) %>%
+  .[[1]]
+
+df_plot$Neighborhood <- factor(df_plot$Neighborhood, levels=lvl.ordered)
+
+ggplot(df_plot, aes(y=price, x=Neighborhood)) +
+  geom_boxplot() +
+  coord_flip() +
+  theme_bw() +
+  ggtitle("The 3 Rules of Real Estate: Location, Location, Location") +
+  ylab("Log Price")
+```
+
+Prices differ by neighborhood, which isn't surprising (note that the neighborhoods in the plot are sorted by average price). This suggests using neighborhood as a random effect. While the sample sizes are small for some neighborhoods, a random effects model natually shrinks within group means towards the overall mean.
+
+```{r}
+df_plot <- ames_train %>% select(price, Fireplace.Qu, Exter.Qual, Bsmt.Qual, Garage.Finish, BsmtFin.Type.1, BsmtFin.Type.2)
+
+# Reshape to wide format
+dfmelt <- melt(df_plot, measure.vars=setdiff(colnames(df_plot),"price"), value.name = "Score")
+
+
+ggplot(dfmelt, aes(y=price,x=Score))+
+  geom_point() +
+  stat_smooth(method = "lm", col = "red") +
+  facet_wrap( ~ variable, ncol=2) +
+  ylab("Log Price") +
+  xlab("Quality Score") +
+  ggtitle("Quality scores are mostly linear") +
+  scale_x_continuous(breaks=1:7,label=c("None","Q1\n(Lowest Qual)", "Q2","Q3","Q4","Q5","Q6\n(Highest Qual)"))
+```
+
+This plot illustrates our point about the quality scores corresponding to approximately linear differences in the average prices. This motivates our decision to treat these variables as numeric. 
+
+
+
+```{r}
+# RMSE
+rmse.train <- function(pred) {
+  return(sqrt(mean((exp(pred) - exp(ames_train$price))^2)))
+}
+rmse.test <- function(pred) {
+  return(sqrt(mean((exp(pred) - exp(ames_test$price))^2)))
+}
+
+#Bias
+bias.train <-function(pred) {
+  return(mean((exp(pred) - exp(ames_train$price))))
+}
+bias.test <-function(pred) {
+  return(mean((exp(pred) - exp(ames_test$price))))
+}
+
+#coverage
+coverage.train <-function(lower, upper) {
+  return(sum(exp(lower)<=exp(ames_train$price)&exp(upper)>= exp(ames_train$price))/length(lower))
+}
+coverage.test <-function(lower, upper){
+  return(sum(exp(lower)<=exp(ames_test$price)&exp(upper)>= exp(ames_test$price))/length(lower))
+}
+
+```
+
+
+## 2. Development and assessment of an initial model
+
+* Initial model: must include a summary table and an explanation/discussion for variable selection.  Interpretation of coefficients desirable for full points.
+* Model selection: must include a discussion
+* Residual: must include a residual plot and a discussion
+* RMSE: must include an RMSE and an explanation  (other criteria desirable)
+* Model testing: must include an explanation
+
+### Initial Model Selection
+
+We decided to use stepwise variable selection as the penalty for narrowing down the number of predictors. Two models were created, using AIC and BIC with backward selection.
+
+```{r}
+model1 = lm(price ~ .-PID, data=ames_train)
+model1.aic = step(model1, trace = FALSE)
+model1.bic = step(model1, k= log(nrow(ames_train)), trace = FALSE)
+
+```
+
+
+One of the main drawbacks of stepwise selection is that it does not do an exhaustive search of the model space. Furthermore, because it is inherently greedy, stepwise selection can have different results especially with different penalties. However, the models created with different criteria shared a lot of the variables included:
+
+```{r}
+aic.names = names(coef(model1.aic))
+bic.names = names(coef(model1.bic))
+intersect(aic.names,bic.names)
+```
+
+Thus, even if we cannot get the best model, we will be able to find one that has many of the same predictors. 
+
+We also tried to use LASSO for variable selection, but decided to use stepwise selection because it provides the most straightforward method to limit the number of variables in the model: we can simply use forward selection, and set the number of steps or iterations to 20. We use BIC because it imposes a heavier penalty on more complex models. However, since the number of variables has been established already, this fact should not affect the final model.
+
+```{r}
+model1null = lm(price ~ 1, data = ames_train)
+
+modsimp = step(model1null ,k= log(nrow(ames_train)), steps = 20,scope = formula(lm(log(price) ~ .-PID, data = ames_train)), direction = "forward", trace = FALSE)
+
+```
+We can see that all the variables in this model are also in the backwards selection AIC model, and all except one were in the BIC model (below). This further shows that stepwise selection will get the most important variables in this case, even if it does not search the entire model space.
+
+```{r}
+finalbic.names = names(coef(modsimp))
+setdiff(finalbic.names,aic.names)
+setdiff(finalbic.names,bic.names)
+```
+
+The LASSO method also includes many of the BIC predictors (see below). It should be noted that the total square footage and overall quality, which should intuitively be important predictors for price) are in the stepwise selected model but not in the lasso one. Although this could be caused by some correlation with other variables, it is further evidence that the stepwise variable selection is results in more easily interpretable models.
+
+```{r}
+X.train = model.matrix(price ~ .-PID, data=ames_train)
+model1.lasso = cv.glmnet(X.train, ames_train$price)
+lasso.names =  names(data.frame(X.train))[which(coef(model1.lasso, s= model1.lasso$lambda.min)!=0)]
+setdiff(finalbic.names,lasso.names)
+```
+
+
+### Model Summary
+
+```{r}
+summary(modsimp)
+```
+
+This model uses 20 predictors, which were selected with the mechanism described above. Most of these variables are self explanatory and consistent with intuitive reasoning: houses that are newer (Year.Built), larger (Total.SF, Lot.Area, Garage.Area), better (Overall.Qual, Overall.Cond), or have more amenities (Full.Bath, Porch.SF, Central.Air, Fireplaces) will be more expensive. The neighborhood coefficients vary between posivite and negative, which is logical since "good" neigborhoods can be expensive, and "bad" neighborhoods can be much cheaper than average. The variation in significance amongst these coefficients is also understandable, because many neighborhoods will be average and will not be important in determining the price of a house. The Functional variable shows that for typical homes and ones with minor deductions, this functionality will not be significant, but it will surely negatively affect houses with major deductions.
+The R-squared value is very high (.94) which means that the model successfully explains most of the variance in prices.
+
+### Residual Plots
+
+```{r}
+par(mfrow=c(2,2))
+plot(modsimp)
+```
+The residuals do not have any trends and have a normal distribution, satisfying the assumptions for the linear model. Even though there are heavy tails, different transformations of the predictors did not lead to better quantile-quantile plots, indicating that a more complex model would be needed. There is a warning about a point with leverage one: this is because it is the only observation in one neighborhood (Landmrk). We chose to leave this point in our model but we are aware that the fact that it may skew our predictions for other houses in the neighborhood. All observations fall within the acceptable range of Cook's distances (<.5), which means there are no outliers.
+
+### Model Testing and RMSE
+
+
+First, we calculated the price for the first observation of test and training data manually. These results may be different from the ones calculated with the predict() function because of rounding. For the training data, the predicted value was 136363.6, compared to the real value of 137000. For the test data, the predicted price was 206033.4, and the real one was 192100. For both these observations, the predicted values are close to the real ones (within 10%).
+
+```{r}
+predsimp <- predict(modsimp, newdata=ames_test, interval = "pred")
+
+simpledata.test<- ames_test<- data.frame(ames_test)
+ames_train<-data.frame(ames_train)
+remove_new_levels<- function(predictor){
+  id <- which(!(ames_test[,predictor] %in% levels(droplevels(ames_train[,predictor]))))
+  ames_test[id,predictor] <- NA
+  return (ames_test[,predictor])
+}
+for(i in which(sapply(ames_test, is.factor))){
+  simpledata.test[,i]<- remove_new_levels(i)
+}
+predfull<- predict(model1,newdata=simpledata.test, interval = "pred")
+predfull[which(is.na(predfull))] <- mean(ames_test$price)
+```
+
+
+```{r}
+table <- rbind(c(rmse.test(predsimp[,1]),rmse.test(predfull[,1])),
+c(bias.test(predsimp[,1]),bias.test(predfull[,1])),
+c(coverage.test(predsimp[,2],predsimp[,3]),coverage.test(predfull[,2],predfull[,3])))
+rownames(table) <- c("RMSE", "Bias", "Coverage")
+colnames(table)<- c("Initial model", "full model")
+knitr::kable(table)
+
+```
+
+This RMSE is fairly good for our model. The full model has a much larger RMSE, probably due to overfitting. The bias in our linear model is a little over half that of the full model, which indicates an improvement in fit. The coverage is almost the same, almost 95% for both.
+
+
+## 3. Development of the final model
+
+* Final model: must include a summary table
+* Variables: must include an explanation
+* Variable selection/shrinkage: must use appropriate method and include an explanation
+
+#### Variable Selection
+
+There are 74 variables in this dataset, meaning there are $2^{74}$ possible combinations of variables from which to choose. Obviously, we need to find a more systematic approach. Based on our EDA and the fairly decent performance of our simple linear model, we felt a GAM would make sense for this data. A GAM perserves some of the strong linear relationships we already saw, while allowing for random effects / random slopes and nonlinear relationships through basis expansions. In contrast to a decision tree based method (e.g., random forest or gradient boosted trees) is that the design of the GAM can be suggested by intuition. Actually, we tried tree based methods before implementing GAM, they help to capture the important variables and interaction terms though they cannot achieve a good performance on this dataset (the best one is gradient boosted tree with approximate 16600 RMSE). For example, our EDA suggested Neighborhood as a random effect. Last, GAMs are computationally very quick to fit, in contrast to some of the Bayesian model averaging approaches. Given the limited time to complete our analysis, this allowed us to manually explore different kinds of models quite easily.
+ 
+In summary, we started by identifying important variables in a linear regression using a stepwise procedure. Then, we ran two other analyses to identify important variables: a PCA, where we looked at the variables with the highest contribution to the first principle component (see the EDA section) and a random forest, where we looked at variables that tended to decrease the entropy measure the most. This formed a smaller group of variables that we used as a starting point for our GAM. Then, based on intuition and trial and error we developed the GAM. 
+
+The PCA detects important variables in the first principal components:
+
+```{r}
+#More code in the EDA
+names(pca$rotation[,1])
+```
+
+The Random Forest detects important variables by the reduction of MSE:
+
+```{r}
+rf_m1 = randomForest(price~.-PID, data=ames_train, mtry=9, importance=TRUE)
+rf_im1 = as.data.frame(importance(rf_m1, type=1))
+rf_im1$var = row.names(rf_im1)
+rf_im1 = rf_im1[order(rf_im1$`%IncMSE`,decreasing = TRUE),]
+imvar = rf_im1$var[1:40]
+imvar
+```
+
+The intersection of variables selected by PCA and Random Forest:
+
+```{r}
+intersect(names(pca$rotation[,1]),imvar)
+```
+
+We first tried to put the above variables and strong predictors found in the linear model into our GAM model. Secondly, we removed several redundant variables, such as one of two highly correlated variables and the variables with high p-value. Thirdly, we applied `choose.k` function to do cross-validation in order to select appropriate knot values for the smooth splines. Finally, we saw that prices differed a great deal by Neighborhood in our EDA, so we allow the intercept of our model to vary by Neighborhood by adding it as a random effect. Also, we added `Yr.sold` as a random effect since we are not going to do time series analysis on this data set.
+
+#### Final Model
+
+```{r}
+modgam = gam(formula = price ~ 
+               s(Total.SF,k=20) + 
+               Overall.Qual + 
+               Total.SF:Overall.Qual+
+               s(Year.Built,k=10) + 
+               Overall.Cond + 
+               s(Bsmt.Unf.SF, k=10) + 
+               s(Neighborhood,bs='re') + 
+               s(Garage.Area, k=10) + 
+               Fireplace.Qu + 
+               s(Lot.Area, k=10) + 
+               Central.Air + 
+               s(Year.Remod.Add, k=10) + 
+               Bldg.Type:Central.Air+
+               Bldg.Type:Lot.Area+
+               Bldg.Type+
+               BsmtFin.SF.2 + 
+               BsmtFin.SF.1 + 
+               Functional+
+               Condition.1 + 
+               Bsmt.Exposure+
+               Full.Bath + 
+               Full.Bath:Overall.Qual+
+               Paved.Drive +
+               Exter.Qual:Overall.Qual+
+               Exter.Qual+
+               N.Floors+
+               Porch:Porch.SF+
+               Kitchen.Qual+
+               s(Yr.Sold, bs="re"),
+             data=ames_train)
+```
+
+#### Variable Explanation
+
+We start by looking at the coefficients that do not have any random effects or smoothing splines.
+
+```{r}
+gamcoef <- coef(modgam)
+
+id_reg <- sapply(names(gamcoef), function(x) !grepl("^s",x) )
+
+df.coef.reg <- data.frame(Coefficient =gamcoef[id_reg])
+df.coef.reg$Variable <- rownames(df.coef.reg)
+
+ggplot(slice(df.coef.reg,2:length(id_reg)), aes(x=Variable, y=Coefficient)) +
+  geom_bar(stat="identity") +
+  coord_flip()+
+  ggtitle("GAM Coefficient Estimates")
+```
+
+Most of these estimates make sense. For example, the estimate for `Overall.Cond` and `Overall.Qual` are positive. Some of the variables are less intuitive. For example, the coefficient on `N.Floors` is negative. This means that after controlling for other variables, including the size of the house, two floors implies a lower predicted price. 
+A few of the estimates on factor variables jump out. For example, for the `Functional` variable, which measures the funtionality of a home, the coefficient on the level `Maj2` (corresponding to major deductions) is very negative. While the sign of the coefficient makes sense, the large magnitude is probably a result of the sample size being small. Similarly, several of the coefficients on `Condition.1`, which measures the proximity to things like feeder streets and railroads, are quite large. Both of these variables are highly skewed towards a few typical values:
+
+```{r}
+# Level counts for a few factor variables
+table(ames_train$Functional)
+
+table(ames_train$Condition.1)
+```
+
+A linear model with a penalty term on the coefficients (e.g,., Lasso or Ridge) might help shrink these coefficients towards more reasonable values. We experimented with removing these models, but found that this harmed the out of sample RMSE.
+
+To understand the random effect estimates on Neighborhood, we can look at their relationship to the average price. As we should expect, higher average prices are correleated with higher random effect estimates. Green Hills is a noteable outlier. We note that we only have two observations from this neighborhood. In general, groups with smaller sample sizes should have random effect estimates that have been shrunk towards the group mean. Interestingly, there is another neighborhood (Landmark) that only has 1 observation, and its random effect is in line with the rest. We might consider excluding Green Hills, but we proceed anyway.
+
+```{r}
+id_neighborhood <- sapply(names(gamcoef), function(x) grepl("s\\(N",x) )
+
+table.coef.neighborhood <- as.matrix(gamcoef[id_neighborhood])
+rownames(table.coef.neighborhood) <- levels(ames_train$Neighborhood)
+
+plot(table.coef.neighborhood, 
+     ames_train %>% group_by(Neighborhood) %>% summarize(mean(price)) %>% .[[2]],
+     xlab="Neighborhood random effect",
+     ylab="Neighborhood average price",
+     main="Random effects and average prices by neighborhood")
+
+text(.34, 12.5, "Green Hills", col='red')
+```
+
+We discuss the variables with smoothing splines in the next section.
+
+We can also look at the summary method of the GAM. Most of the coefficients have siginificant p-values. The adjusted R-Squared is pretty high, 0.948. Recall, these are all with respect to the log price. The smoothing terms all appear significant.
+
+```{r}
+summary(modgam)
+```
+
+## 4. Assessment of the final model
+
+* Residual: must include a residual plot and a discussion
+* RMSE: must include an RMSE and an explanation  (other criteria desirable)
+* Model evaluation: must include an evaluation discussion
+* Model testing : must include a discussion
+* Model result: must include a selection of the top 10 undervalued and overvalued  houses
+
+#### Performance Evaluation (based on RMSE)
+
+```{r}
+# Predictions
+predgam.train <- exp(predict(modgam))
+predgam.test <- exp(predict(modgam, newdata=ames_test))
+predgam.validation <- exp(predict(modgam, newdata=ames_validation))
+
+# Dataframe of predictions
+pred.train <-  data.frame(prediction=predgam.train, 
+                          actual=exp(ames_train$price),
+                          resid=exp(ames_train$price) - predgam.train,
+                          PID = ames_train$PID)
+
+pred.test <-  data.frame(prediction=predgam.test, 
+                         actual=exp(ames_test$price),
+                         resid=exp(ames_test$price)-predgam.test,
+                         PID = ames_test$PID)
+
+# Summary statistics
+predgam.train.sum <- c()
+predgam.train.sum$rmse <- rmse.train(log(predgam.train))
+predgam.train.sum$max_rmse <- max(abs(pred.train$resid))
+
+predgam.test.sum <- c()
+predgam.test.sum$rmse <- rmse.test(log(predgam.test))
+predgam.test.sum$max_rmse <- max(abs(pred.test$resid))
+
+# Summary table
+table.sum <- rbind(
+  t(as.matrix(predgam.train.sum)),
+  t(as.matrix(predgam.test.sum))
+)
+rownames(table.sum) <- c("Training","Testing")
+knitr::kable(table.sum, caption="Summary Statistics")
+```
+
+The RMSE computed by our complex model is shown in the above chart. The max RMSE of the test data set is `62776.33`(appears in 349th row of test data: PID: `528178070`; predicted price: `358473.7`	; actual price: `421250`) and our model's RMSE is `13994.85`. According to the RMSE we got, our model can predict the houses pricing around 200,000 accurately but instably predict the relatively high price houses. If model averaging is allowed here, our model can easily achieve lower RMSE but lose interpretability. 
+
+Note on prediction intervals: The `mgcv` package does not include a method for calculating prediction intervals (they only have confidence intervals on the mean estimates). So, we hacked the predictions by centering the prediction intervals from our simple model around the predictions from our complex model. We acknowledge it's not an ideal approach.
+
+```{r}
+# Save validation output
+predsimp <- as.data.frame(predict(modsimp, newdata=ames_validation, interval="pred"))
+
+predictions = data.frame(fit=predgam.validation)
+predictions$lwr = predictions$fit - (exp(predsimp$fit)-exp(predsimp$lwr))
+predictions$upr = predictions$fit + (exp(predsimp$upr)-exp(predsimp$fit))
+predictions$PID = ames_validation$PID
+save(predictions, file="predict-validation.Rdata")
+```
+
+
+```{r}
+predsimp <- as.data.frame(predict(modsimp, newdata=ames_test, interval="pred"))
+
+# Save test output
+predictions = pred.test %>% select(fit=prediction)
+predictions$lwr = predictions$fit - (exp(predsimp$fit)-exp(predsimp$lwr))
+predictions$upr = predictions$fit + (exp(predsimp$upr)-exp(predsimp$fit))
+predictions$PID = pred.test$PID
+save(predictions, file="predict.Rdata")
+```
+
+```{r}
+# Check coverage on testing data
+mean(predictions$lwr < exp(ames_test$price) & ames_test$price < predictions$upr)
+```
+
+
+#### Residual Check
+
+```{r}
+### Residual plots
+p1 <- ggplot(pred.train, aes(x=prediction, y=actual)) +
+  geom_point() +
+  ggtitle("Predicted vs. Actual (Train)")
+
+p2 <- ggplot(pred.train, aes(x=prediction, y=resid)) +
+  geom_point() +
+  ggtitle("Residuals (Train)")
+
+p3 <- ggplot(pred.test, aes(x=prediction, y=actual)) +
+  geom_point() +
+  ggtitle("Predicted vs. Actual (Test)")
+
+p4 <- ggplot(pred.test, aes(x=prediction, y=resid)) +
+  geom_point() +
+  ggtitle("Residuals (Test)")
+
+grid.arrange(p1, p2, p3, p4, ncol=2)
+```
+
+A strong correlation between the model’s predictions and its actual results is shown on the left column plots, which indicates the GAM model for the house pricing is very accurate. According to the residual plots on the right column, the model predictive power is captured by the distance between each point to the zero line. Since the model is built on the training data, the residuals are pretty symmetrically distributed, tending to cluster towards the `x=2e+05` of the plot. However, in the residual plots of test data, the residuals are more diversified, especially for the predicted price higher than `3e+05`. The residual plots of test data indicates that our model may not accurately price the relatively expensive houses. 
+
+#### Model Check
+
+```{r}
+par(mfrow=c(2,2))
+gam.check(modgam,pch=19,cex=.3)
+```
+
+Comparing to the model plots given in simple model section, the above four plots clearly show the reduction of outliers as well as residuals, which demonstrates the GAM model leads to improved prediction.
+
+
+```{r}
+par(mfrow=c(3,3))
+plot(modgam)
+```
+
+One difficulty in building the GAM model is determining the smoothing spline terms. We consider smoothing spline as a function to minimize MSE but suject to a constraints on the average curvature. We use `plot(modgam)` to detect if we choose the appropriate curvature allowed in the GAM. According to the above plots, the spline selected by generalized cross-valiation works pretty well on this GAM model except the variable `Lot.Area`. The distribution of this variable is right skewed and has a really heavy tail. We attempted to change the knot value of this variable but did not figure out a better value to balance our variance and bias.   
+
+According to all the above plots, we consider our GAM model achieves a good trade-off between RMSE and bias. The model only includes 25 independent variables and remains interpretability. If we allow averaging the models, we can achieve high predictive accuracy but lose interpretability. In this case, the RMSE is achieved around `14000` and bias is around `-900` on the test data. If further effort is allowed, we will focus more on modifying the model in order to increase its accuracy on pricing the relatively expensive houses. 
+
+#### Model Results
+
+```{r}
+# Top 10 over/undervalued
+top_over <- pred.train %>%
+  arrange(desc(resid)) %>%
+  slice(1:10) %>%
+  left_join(ames_train, by="PID")
+
+
+top_under <- pred.train %>%
+  arrange(resid) %>%
+  slice(1:10) %>%
+  left_join(ames_train, by="PID")
+```
+
+```{r}
+# Table of over/undervalued
+table.under <- cbind(1:10,as.matrix(select(top_under,PID,resid)))
+colnames(table.under) <- c("Rank","PID", "Residual")
+knitr::kable(table.under,caption="Top Undervalued")
+
+table.over <- cbind(1:10,as.matrix(select(top_over,PID,resid)))
+colnames(table.over) <- c("Rank","PID","Residual")
+knitr::kable(table.over,caption="Top Overvalued")
+```
+
+Visualization of top ten over/under-valued houses:
+
+```{r}
+p5 <- ggplot(data = top_over, aes(x = as.factor(PID), y = actual)) + 
+  geom_bar(stat = "identity", fill = "red", colour = "red",alpha=0.5)+
+  geom_bar(data = top_over, aes(x = as.factor(PID), y = prediction),
+           stat = "identity", fill = "blue", colour = "blue", alpha=0.2)+
+  ylab("Actual/Predicted Price")+
+  ggtitle("Top Ten Over-valued Houses")+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+p6 <- ggplot(data = top_under, aes(x = as.factor(PID), y = actual)) + 
+  geom_bar(stat = "identity", fill = "red", colour = "red",alpha=0.5)+
+  geom_bar(data = top_under, aes(x = as.factor(PID), y = prediction),
+           stat = "identity", fill = "blue", colour = "blue", alpha=0.2)+
+  ylab("Actual/Predicted Price")+
+  ggtitle("Top Ten Under-valued Houses")+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+grid.arrange(p5, p6, ncol=2)
+
+  
+```
+
+
+## 5. Conclusion
+
+Qualitatively, we have made a few observations:
+
+ * A simple linear model limited to 20 predictors did a fairly good job of prediction. Our various attempts at a complex model (we tried random forests, gradient boosted trees, Lasso, and, finally a GAM) were able to improve the RMSE by a couple thousand.
+ * We developed a model through a combination of systematic procedures (stepwise selection), suggesting important variables from other models (e.g. random forest, PCA), and intuition (e.g., random effects by neighborhood). 
+ *  In our GAM, a few interaction terms, random effects by neighborhood and year sold, and smoothing splines on a few of the more continuous variables (square footage, etc.) were important in improving the fit over the simple linear model.
+
+The results gotten in the previous models are listed:
+
+```{r}
+table <- rbind(c(rmse.test(predfull[,1]),rmse.test(predsimp[,1]), rmse.test(log(predgam.test))),
+c(bias.test(predfull[,1]),bias.test(predsimp[,1]), bias.test(log(predgam.test))),
+c(coverage.test(predfull[,2],predfull[,3]), coverage.test(predsimp[,2],predsimp[,3]),0))
+rownames(table) <- c("RMSE", "Bias", "Coverage")
+colnames(table)<- c("Full model","Simple model","Complex model")
+knitr::kable(table)
+```
+
+The RMSE decreases from `16000` to `15000` after we selects variables through stepwise function and random forest and removes the highly correlated variables. Then it decreases to `14000` after we implements the GAM model to allow flexible non-linear functions of predictors. The lowest bias is achieved by our simple model, which is `484`. Since we use smoothing splines in the GAM model which is actually a tradeoff between bias and variance, we uses higher value for the $\lambda$ to decrease variance but increase bias. The coverage for the full model and simple model are all around 95%, which indicates all the models have achieved satisfied predictive power. If averaging the models is allowed, we can  definitely achieve higher predictive accuracy but lose interpretability. In the further research, we will focus more on modifying the model to increase its accuracy on pricing the relatively expensive houses.   
