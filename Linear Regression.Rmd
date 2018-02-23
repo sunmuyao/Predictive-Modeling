@@ -1,0 +1,371 @@
+---
+title: "Linear Regression"
+author: "Muyao Sun"
+date: "February 3, 2017"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(knitr)
+library(dplyr)
+library(GGally)
+library(MASS)
+library(car)
+# add other libraries here
+```
+
+This exercise involves the Auto data set from ISLR.  Load the data and answer the following questions adding your code in the code chunks. 
+
+```{r data, echo=F}
+data(Auto)
+```
+
+## Exploratory Data Analysis
+1. Create a summary of the data.  How many variables have missing data?
+
+```{r}
+summary(Auto)
+#check missing values in each column
+sapply(Auto, function(x) sum(is.na(x)))
+```
+
+There are no values stored as "NA", so this suggests there is no missing data. However, the row numbers occasionally skip, suggesting entire rows might be missing. By typing `help(Auto)` we see that there are indeed 16 observations that were removed from the dataset.
+
+2.  Which of the predictors are quantitative, and which are qualitative?
+```{r}
+# Quantitative variables
+help(Auto)
+Auto$origin = as.factor(Auto$origin)
+col_quant <- which(sapply(Auto,class) != 'factor')
+names(Auto)[col_quant]
+
+# Qualitative variables
+names(Auto)[-col_quant]
+```
+
+Although origin is stored as a numeric value, by typing `help(Auto)` we learn that it designates the origin of the car (American, European, Japanese). Therefore we group it with the qualitative variables, along with the vehicle name. The other variables are quantitative.
+
+3. What is the range of each quantitative predictor? You can answer this using the `range()` function.
+
+```{r}
+out_range <- sapply(Auto[,col_quant], range)
+rownames(out_range) <- c("min","max")
+kable(out_range,  caption = "Quantitative variable ranges")
+```
+
+4. What is the mean and standard deviation of each quantitative predictor?
+
+```{r}
+out <- rbind(
+  sapply(Auto[,col_quant], mean),
+  sapply(Auto[,col_quant], sd))
+rownames(out)<-c("Mean","Standard Deviation")
+kable(round(out,2))
+```
+
+5. Now remove the 10th through 85th observations. What is the
+range, mean, and standard deviation of each predictor in the
+subset of the data that remains?
+
+```{r}
+out <- rbind(
+  sapply(Auto[-c(10:85),col_quant], range),
+  sapply(Auto[-c(10:85),col_quant], mean),
+  sapply(Auto[-c(10:85),col_quant], sd))
+rownames(out) <- c("Min","Max","Mean","Standard Deviation")
+kable(round(out,2))
+```
+
+6. Investigate the predictors graphically, using scatterplots or other tools of your choice. Create some plots
+highlighting the relationships among the predictors. Comment on your findings.
+```{r}
+ggpairs(Auto, columns=col_quant)
+```
+
+Comment:
+Based on the plots, mpg has strong correlations with cylinders, displacement, horsepower and weight, which means they can be treated as predictors to each other. Except for mpg, cylinders also has strong correlations with displacement, horsepower and weight. Displacement is also strongly correlated to horsepower and weight. Besides the above listed strong correlations, horsepower is also strongly correlated to weight and acceleration. 
+
+Also, mpg, displacement, horsepower, and weight are right skewed. This suggests applying a log transformation.
+
+
+7. Suppose that we wish to predict gas mileage (mpg) on the basis of the other variables. Do your plots suggest that any of the other variables might be useful in predicting mpg? Justify your answer.
+
+The cylinders, displacement, horsepower, weight, year and origin might be useful in predicting mpg. While acceleration has the smallest correlation with mpg (in absolute value), it has a negative correlation with the other variables, which may make it useful for prediction. Because based on our plots, the mpg is correlated to the above variables, which implies that they might be useful in predicting mpg.
+
+
+
+## Simple Linear Regression
+
+8.  Use the `lm()` function to perform a simple linear 
+regression with `mpg` as the response and `horsepower` as the
+predictor. Use the `summary()` function to print the results.
+Comment on the output.
+For example:
+    (a) Is there a relationship between the predictor and the response?
+    (b) How strong is the relationship between the predictor and
+the response?
+    (c) Is the relationship between the predictor and the response
+positive or negative?
+    (d) What is the predicted mpg associated with a horsepower of
+98? What are the associated 95% confidence and prediction
+intervals?
+
+```{r}
+mdl <- lm(mpg ~ horsepower, data=Auto)
+summary(mdl)
+point = data.frame(horsepower = 98)
+predict(lm(mpg ~ horsepower, data=Auto), point, interval = "confidence", level = 0.95)
+predict(lm(mpg ~ horsepower, data=Auto), point, interval = "prediction", level = 0.95)
+```
+
+Comment:
+Based on the linear regression result, there is indeed a relationship between the predictor (mpg) and the response (horsepower). The p-value is very small, indicating this relationship is statistically significant. In particular, mpg has a negative relationship with horsepower. For one unit increase in horsepower, the mpg decreases 0.158 units. The predicted mpg is 24.467 associated with a horsepower of 98. And the 95% confidence interval is [23.97308, 24.96108] and prediction interval is [14.809, 34.125].
+
+
+9. Plot the response and the predictor. Use the `abline()` function to display the least squares regression line.
+
+```{r}
+plot(Auto$horsepower,Auto$mpg,
+     xlab="mpg",
+     ylab="horsepower",
+     main="Inverse relationship between mpg and horsepower")
+abline(a=mdl$coefficients["(Intercept)"], 
+       b=mdl$coefficients["horsepower"],
+       col="blue")
+legend("topright",legend=c("Data","OLS fit"),lty=c(1,1),col=c("black","blue"))
+```
+
+10. Use the `plot()` function to produce diagnostic plots of the least squares regression fit. Comment on any problems you see with the fit.
+
+```{r}
+par(mfrow=c(2,2))
+plot(mdl)
+```
+
+Comment:
+First, there may exist non-linearity problem based on the residual plot. If the linear relationship is correct, the residual plot should not show any pattern and residuals should have zero mean and constant variance. However, there is a clear U-shape in this residual plot, which means there may exist non-linearity problem. 
+Second, there are a few outliers in the data. Based on the Normal Q-Q plot and Scale-Location plot, for example, the 322ths, 330ths and 334ths points are outliers. In addition, according to the Q-Q plot, the distribution residuals cannot be a normal distribution and will be left-skewed.
+Third, since every observations' cook's distance is smaller than 0.5, we report that there are no high leverage points.
+
+
+## Multiple Regression
+
+11. Produce a scatterplot matrix which includes all of the variables in the data set.
+```{r}
+pairs(Auto)
+```
+
+12. Compute the matrix of correlations between the variables 
+using the function `cor()`. You will need to exclude the
+name variable, `cor()` which is qualitative.
+
+```{r}
+kable(round(cor(Auto[,col_quant]),3))
+```
+
+13. Use the `lm()` function to perform a multiple linear regression with `mpg` as the response and all other variables except `name` as the predictors, using the formula `mpg ~ . -name`, where the `.` includes all remaining variables in the dataframe and `-` removes a variable. Use the `summary()` function to print the results. 
+Comment on the output. For instance:
+    (a) Is there a relationship between the predictors and the response?
+    (b) Which predictors appear to have a statistically significant
+relationship to the response?
+    (c) What does the coefficient for the `year` variable suggest?
+
+```{r}
+mdl2 <- lm(mpg ~ . -name, data=Auto)
+summary(mdl2)
+```
+
+Comment:
+First of all, note that since we decided origin is a qualitative variable, we converted it to a factor type. This means `lm` adds indicator variables for origin=2 and origin=3 (where origin=1 corresponds to the global intercept term). This gives us a total of 9 predictors.
+
+Now, weight, year and origin has a linear relationship with mpq at 99.9% significance level. Displacement has a positive linear relationship with mpq at 99% significance level.
+Cylinders, horsepower and acceleration also has a relationship with mpq, but not statistically significance. 
+The coefficient year suggests: for one year increasing, the mpq increases by 0.75. 
+
+14. Use the `plot()` function to produce diagnostic plots of the linear regression fit. Comment on any problems you see with the fit. Do the residual plots suggest any unusually large outliers? Does the leverage plot identify any observations with unusually high leverage?   Please use `name` to identify the cases, rather than their case number.
+
+```{r}
+par(mfrow=c(2,2))
+plot(mdl2)
+```
+
+
+```{r}
+# High residuals
+resid = mdl2$residuals
+out_resid <- Auto %>%
+  dplyr::select(name) %>%
+  mutate(Index=rownames(Auto), Residual=round(resid,3)) %>%
+  arrange(desc(Residual)) %>%
+  slice(1:5)
+kable(out_resid)
+
+# High leverage
+lev = hat(model.matrix(mdl2))
+out_lev <- Auto %>%
+  dplyr::select(name) %>%
+  mutate(Index=rownames(Auto), Leverage=round(lev,3)) %>%
+  arrange(desc(Leverage)) %>%
+  slice(1:5)
+kable(out_lev)
+```
+
+Comment:
+First, there may exist non-linearity problem based on the residual plot. If the linear relationship is correct, the residual plot should not show any pattern. However, there is a clear U-shape in this residual plot and the variance of residuals increases as fitted values increase, which means there may exist non-linearity problem. 
+Second, there are a few outliers in the data. Based on the Normal Q-Q plot and Scale-Location plot, the mazda gic, vw dasher(diesel),vw rabbit c(diesel), volkswagen rabbit custom diesel and honda civic 1500 gl are outliers.
+Third, since every observations' cook's distance is smaller than 0.5, we report that there are no high leverage points.
+
+
+15. Use the `*` and `:` symbols to fit linear regression
+models with interaction effects. Do any interactions 
+appear to be statistically significant?
+
+One naive approach to this problem would be to add in all the interaction effects. Here's what this looks like in R:
+
+```{r}
+mdl_all = lm(mpg ~ (. -name)*(. -name), data = Auto)
+summary(mdl_all)
+```
+
+As we should expect, adding the interaction features increases the R-squared value. However, it's not immediately obvious if this increase of 27 degrees of freedom is worth it. To start answering this question, we will look at an F-test. This will tell us if the new interaction features are at least jointly significant. We do this with the analysis of variance function.
+
+```{r}
+anova(mdl2,mdl_all)
+```
+
+The F-statistic has a small p-value, indicating the interaction features are indeed jointly significant. However, we have thrown in so many additional predictors at once that we wonder if there is a more parsimonious model that might help prevent overfitting.
+
+There are many model selection procedures that iteratively add (forward selection) or iteratively subtract (backwards selection) features based on some goodness-of-fit measurement. For our analysis, we will be less systematic and guide our choice based on intuition and the results of the large model we just fit.
+
+From an intuitive perspective, a good starting point may be the year of the vehicle. For example, we could imagine the impact of more horsepower on mpg being less for a newer car compared to an older one as the former might make use of new technology to increase horsepower without impacting mpg by as much. Similar arguments could be made for its interaction with displacement, weight and acceleration. Furthermore, we saw in our first model that year was a highly significant variable, so it makes sense to at least examine it's interaction with other variables. Here are the results:
+
+```{r}
+mdl3 = lm(mpg ~ . -name +(. -name):year, data = Auto)
+summary(mdl3)
+```
+
+So, indeed we see year's interaction with horsepower, displacement, weight, and acceleration are all fairly significant (at the 10% level at worst). We'll keep these and throw away the rest.
+
+Now, let's try to use our model with all the interaction term to suggest some choices. Interestingly, we saw that interactions between acceleration and origin had an impact. It's not unreasonable to think the three origins use different technologies that change the impact of acceleration on mpg, so we will add these interaction effects. 
+
+```{r}
+mdl4 <- lm(mpg ~ . -name + horsepower:year + displacement:year + weight:year + acceleration:year + acceleration:origin, data = Auto)
+summary(mdl4)
+```
+
+Now, all our interaction effects have significant p-values (if you consider the 10% level to be significant, but most are better than that anyway). Let's compare our models using analysis of variance.
+
+```{r}
+anova(mdl2,mdl4,mdl_all)
+```
+
+This tells our new model (row 2) with selected interaction terms does improve on the no interaction term model (row 1). However, there is still room for improvement. The complete model with all th interaction terms still has a significant F-statistic over our chosen model. However, we were able to achieve a large portion of the improvement in fit with only 6 additional degrees of freedom rather than 27.
+
+
+16.  Examine the diagnostic plots for the model with interaction effects and comment on whether there are any problems.
+
+```{r}
+par(mfrow=c(2,2))
+plot(mdl4,which=1)
+plot(mdl4,which=2)
+abline(a=0,b=1,col="red")
+legend("topleft",legend=c("Best fit","1-1 line"),col=c("black","red"),lty=c(2,1))
+plot(mdl4,which=3)
+plot(mdl4,which=5)
+```
+
+
+Comment:
+Compared to the model without the interaction effects, the model with the interaction effects has a much better residuals plot. That is, there is less of a nonlinear U-shaped pattern. We are closer to confirming the normal assumption of the residuals.
+
+On the upper-right chart, we added the 1-1 line. The points in the upper right tell us a few observations are outside the theoretical quantities. A log transformation of mpg might help with this.
+
+Last, although all the observations' cook's distance is still smaller than 0.5, cook's distance on some points increase and become closer to 0.5.
+
+
+17. Try a few different transformations of the predictor and response variables. Comment on your findings.  Are you able to find transformations that resolve any of the problems that were apparent in diagnostic plots so that assumptions of regression are satisfied?  (Provide supporting plots).
+
+```{r}
+#use boxcox to find if we need to transform dependent variable
+boxcox(mdl4)
+
+#compute the Box-Tidwell power transformations of the predictors in a linear model
+boxTidwell(log(mpg) ~ horsepower + cylinders + displacement + acceleration, data = Auto)
+```
+
+Comment:
+As we've discussed above, mpg seems to have a right skew, so we should consider some transformations. The `boxcox` function helps us determine the optimal parameter value for a boxcox transformation. While the 95% confidence interval is outside of zero, it is still relatively close to zero that we will try a parameter value of zero, which corresponds to a log transformation. This will ease model interpretability.
+
+Now we consider the covariates. First of all, from the plots of the Problem 6, we can identity that the weight is highly correlated to other variables, like horsepower and cylinders, and put the weight into the regression may result in multi-linearity problem and fail of transformation of other variables. We decide to take the weight variable out of the transformation test.
+Secondly, from the Problem 5, we can find that the range of year and origin are very small, which means the transformation may have little effect. Therefore, we don't need to consider the transformation of those two variables.
+
+Last, we use boxTidwell function to find the optimal transformation of other variables.
+Based on the result of boxTidwell, at 95% significance level, only the horsepower and acceleration need to be transformed and should be transformed to log(horsepower) and log(acceleration).
+
+We now the fit the model and see how it looks.
+
+```{r}
+mdl5 <- lm(log(mpg) ~  cylinders + displacement + log(horsepower) + weight + log(acceleration) + year + origin + horsepower:year + displacement:year + weight:year + acceleration:year + acceleration:origin, data = Auto)
+summary(mdl5)
+
+par(mfrow=c(2,2))
+plot(mdl5,which=1)
+plot(mdl5,which=2)
+abline(a=0,b=1,col="red")
+legend("topleft",legend=c("Best fit","1-1 line"),col=c("black","red"),lty=c(2,1))
+plot(mdl5,which=3)
+plot(mdl5,which=5)
+```
+
+Since we're not adding any coefficients (compared to our interaction term model), the R-squared is a fair measurement of fit. It increases, telling us the log transformations are improving the explained variance. In the residuals plot, the residuals appear to have little relationship with the fitted values (though the improvement over the interaction term model is small). There also appears to be an improvement in the normality of the tails. The largest values exceed the theoretical quantities by less than they did before (though again, the difference is fairly small).
+
+
+18. Explore variable effects using `termplot` adding interval estimates and partial residuals and comment on any features. 
+
+```{r}
+par(mfrow=c(2,3))
+termplot(mdl5, partial.resid = TRUE, rug = T, se = T, smooth = panel.smooth,
+         terms=c("cylinders","displacement","log(acceleration)","weight","log(horsepower)","year","origin"))
+```
+
+The slope of the termplot is equal to the estimated coefficients of the related variables. After transformation, the real fitting line is approximate to the dash line that indicates the linear relationship between transformed independent variables and dependent variable.
+
+
+19. Construct 95% confidence intervals for the coefficients, using the function `confint(lm.object)` and provide interpretations in terms of the original variables if you transformed any of the variables.  
+
+```{r}
+kable(round(confint(mdl5),4))
+```
+
+Since we transformed several values, the regression coefficients will have to be converted back to the original units.
+
+To illustrate this, we'll right out a simple model with only two covariates:
+
+\begin{align*}
+\log{(\text{mpg})} &= \beta_0+\beta_1\text{year}+\beta_2\log{(\text{horsepower})} \\
+\text{mpg} &= \exp\{\beta_0+\beta_1\text{year}+\beta_2\log{(\text{horsepower})}\} \\
+&= \exp\{\beta_0\}+\exp\{\beta_1\text{year}\} +\ \exp\{\beta_2\log{(\text{horsepower})}\} \\
+&= \exp\{\beta_0\}+\exp\{\beta_1\text{year}\} +\ \text{horsepower}^{\beta_2} \\
+\end{align*}
+
+So, for a 10% change in horsepower we have $\text{(1.1*horsepower)}^{\beta_2}=1.1^{\beta_2}\text{horsepower }^{\beta_2}$, meaning mpg increases by $1.1^{\beta_2}$. Adding the other coefficients just controls for other variables. For a non-logged variable, year for example, a one unit increase in year will lead to a $100*(e^{\beta^1}-1)\%$ increase in mpg.
+
+The interpretation of the intercept is that when all the non-logged variables are zero and all the logged variables are 1, the predicted mpg is just $e^{\beta_0}$.
+
+
+20.  Provide a brief summary about the results of you model and that would suitable for discussing with a car dealer, who has little statistical background. 
+
+The purpose of our model is to understand the relationship between a number of car attributes and the mpg of the car. In particular, we look at the number of cylinders, displacement of the engine, horsepower, weight, acceleration, model year, and geographic origin of the car. There's no limit to the kind of model we could construct, but a linear model provides a very simple, interpretable result. 
+
+In addition to the variables mentioned above, we also want to consider how these variables interact. For example, the impact engine displacement on mpg may be very different in 1970 than it is in 1980 as new technology may have allowed for the impact of engine displacement to have changed. 
+
+A final complication is that variables may have a distribution that's unfit for our linear model. We can take a logarithmic transformation to help mitigate the impact of skewness in the variables. This will help make sure that the degree to which our predictions are off don't depend on the value of the predictions, but are instead randomly centered around zero always.
+
+Our final model shows year as the most significant predictor. This makes a lot of sense as technology has certainly improved fuel economy. A second important predictor is the origin. European and Japanese cars tend to be more efficient, which is a commonly held belief. While you might be tempted to say this is because American cars are larger, we're actually controlling for weight by including it in the regression. European and Japanese cars have better fuel economy even when car weight is held constant. Acceleration is also a significant variable, which isn't surprising, but what may be surprising is that it's interaction with the car origin is also significant, telling us the impact of acceleration depends on the origin.
+
+
+
