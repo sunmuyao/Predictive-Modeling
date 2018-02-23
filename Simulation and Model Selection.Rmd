@@ -1,0 +1,919 @@
+---
+title: 'Simulation and Model Selection'
+author: "Muyao Sun"
+date: "March 10, 2016"
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+---
+
+
+```{r setup, warning=FALSE, echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE)
+suppressMessages(library(ggplot2))
+suppressMessages(library(dplyr))
+suppressMessages(library(GGally))
+library(BAS)
+library(knitr)
+# post on piazza for additional packages if there are wercker build errors due to missing packages
+```
+
+For this assignment we will explore simulation of data to compare methods for estimation and model selection.  To get started, refer to the code from Lab6 and simulate the datasets as described there.  Some "guideposts" for when to finish parts are provided within the problem set.
+
+1.  Add to the Lab6 code a second set of 100 datasets for testing (prediction) with $25$ observations, but where the $X$'s have the same correlation matrix as in the training data.   Provide a brief description of the model that generated the data and summary of the simulation study.  (ie dimensions, true $\beta$ etc, number of simulated datasets etc.). _(Finish Monday: most code is from lab; modification fo add test data should be straightforward)_
+
+
+We start by specifying the true parameters $\sigma^2$ and $\beta_{true}$:
+
+```{r true}
+# true parameters
+sigma = 2.5
+betatrue = c(4,2,0,0,0,-1,0,1.5, 0,0,0,1,0,.5,0,0,0,0,-1,1,4)
+#          int|    X1                            | X2     |X3          
+```
+
+Using these parameters here's how we generate each dataset ($Y$, $X$) of $n$ observations:
+
+* Generate a $n\times10$ matrix $Z$
+* Define the $n\times15$ matrix $X1$ such that the first 10 columns are $Z$ exactly, and the last 5 columns are a linear combination of the first 5 columns of $Z$ plus normally distributed noise (mean 0, standard devation 1).
+* Define the $n\times4$ matrix $X2$ as normally distributed noise (mean 0, standard deviation 1)
+* Define the $n\times1$ matrix $X1$ as the last column of $X2$ plus a smaller amount of normally distribute noise (mean 0, standard deviation 0.1).
+* Bind the columns of $X1$, $X2$, and $X3$ and subtract the column means to define the $n\times20$ matrix $X$.
+* Define the linear predictor $\mu$ by $\mu=X\beta_{true}$ (note that in practice we have to augment $X$ with a column of 1's for the intercept).
+* Define response $y_i$ by $\mu_i+\epsilon_i$, where $\epsilon\sim N(0,\sigma^2)$
+
+We generate 100 datasets this way, using $n=50$ for the training set and $n=25$ for the test set.
+
+```{r}
+simulate_datasets <- function(n, n_datasets, name_datasets, betatrue, sigma){
+  
+  fname=rep(NA,n_datasets)
+  
+  # create n_datasets datasets
+  for (i in 1:n_datasets) {
+    
+    # generate some satandard normals
+    Z = matrix(rnorm(n*10, 0, 1), ncol=10, nrow=n)
+    
+    #  Create X1 by taking linear cominations of Z to induce correlation among X1 components
+    
+    X1 = cbind(Z, 
+               (Z[,1:5] %*% c(.3, .5, .7, .9, 1.1) %*% t(rep(1,5)) +
+                  matrix(rnorm(n*5, 0, 1), ncol=5, nrow=n))
+    )
+    # generate X2 as a standard normal  
+    X2 <- matrix(rnorm(n*4,0,1), ncol=4, nrow=n)
+    
+    # Generate X3 as a linear combination of X2 and noise  
+    X3 <- X2[,4]+rnorm(n,0,sd=0.1)
+    
+    # combine them  
+    X <- cbind(X1,X2,X3)
+    
+    # subtract off the column means
+    X = sweep(X, 2, apply(X,2, mean), FUN="-") 
+    #  also see scale()
+    # Generate mu     
+    # X does not have a column of ones for the intercept so need to add the intercept  
+    # for true mu  
+    mu = betatrue[1] + X %*% betatrue[-1] 
+    
+    # now generate Y  
+    Y = mu + rnorm(n,0,sigma)  
+    
+    # make a dataframe and save it
+    assign(name_datasets, data.frame(Y, X, mu))
+    fname[i] = paste(name_datasets, as.character(i), sep="")
+    
+    save(list=name_datasets, file=fname[i])
+  }
+  return(fname)
+}
+```
+
+```{r datasets, cache=TRUE}
+set.seed(42)
+
+#sample size of training and test sets
+n_train = 50
+n_test = 25
+
+# Generate the datasets
+fname_train = simulate_datasets(n_train, n_datasets=100, name_datasets="df_train", betatrue, sigma)
+fname_test = simulate_datasets(n_test, n_datasets=100, name_datasets="df_test", betatrue, sigma)
+```
+
+
+2.  Using Ordinary Least squares based on fitting the full model for each of the 100 data sets,  Compute the average RMSE for a) estimating $\beta^{true}$, b) estimating
+$\mu^{true} = X \beta^{true}$ and c) out of sample prediction for the test data from the 100 data sets. Present histograms of the RMSEs and show where the average falls.
+Note for a vector of length $d$, RMSE is defined as
+$$
+RMSE(\hat{\theta}) = \sqrt{\sum_{i = 1}^{d} (\hat{\theta}_j - \theta_j)^2/d}
+$$
+_(Finish Monday as this code from lab can be directly used/modified for this)_
+
+```{r}
+RMSE.OLS.BETA  = rep(NA,100)
+RMSE.OLS.MU  = rep(NA,100)
+RMSE.OLS.YTEST  = rep(NA,100)
+
+for( i in 1:100) {
+  rm(df_train,df_test)
+  load(fname_train[i])
+  load(fname_test[i])
+  
+  nk.ols = lm(Y ~ . -mu, data=df_train)
+  coef.ols = coef(nk.ols)
+  
+  X_train = as.matrix(select(df_train,-Y,-mu))
+  X_test = as.matrix(select(df_test,-Y,-mu))
+  
+  # Estimating beta
+  RMSE.OLS.BETA[i] = sqrt(mean((betatrue - coef.ols)^2))
+  
+  # Estimating mu
+  RMSE.OLS.MU[i] = sqrt(mean((df_train$mu - cbind(1,X_train) %*% as.matrix(coef.ols))^2))
+  
+  # Out of sample prediction of Y
+  RMSE.OLS.YTEST[i] = sqrt(mean((df_test$Y - cbind(1,X_test) %*% as.matrix(coef.ols))^2))
+}
+```
+
+```{r}
+# Plot the results
+par(mfrow=c(1,3))
+hist(RMSE.OLS.BETA, main="a) RMSE for beta")
+abline(v=mean(RMSE.OLS.BETA),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.OLS.MU, main="b) RMSE for mu")
+abline(v=mean(RMSE.OLS.MU),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.OLS.YTEST, main="c) RMSE for Y")
+abline(v=mean(RMSE.OLS.YTEST),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+```
+
+3.  Use AIC with either stepwise or all possible subsets to select a model and then use OLS to estimate the parameters under that model.  Using the estimates to compute the RMSE for a) estimating $\beta^{true}$, b) estimating $\mu^{true}$, and c) predicting $Y^{test}$. Present  histograms of the RMSE, and show where the  average RMSE falls on the plot.   Also report d) the number of times you select the true model using AIC out of the 100 simulations. _(A little more challenging: discuss with team  by Tuesday.  Figuring this out how to calculate RMSE with model selection will be needed for subsequent parts so start this early!.  Once this is done the  problem 5 should be easy!  Your write up should make it clear whether you used stepwise or all possible subsets)_ 
+
+
+```{r}
+RMSE.AIC.BETA  = rep(NA,100)
+RMSE.AIC.MU  = rep(NA,100)
+RMSE.AIC.YTEST  = rep(NA,100)
+SELECT.TRUE.AIC = rep(NA,100)
+
+for( i in 1:100) {
+  rm(df_train,df_test)
+  load(fname_train[i])
+  load(fname_test[i])
+  
+  nk.ols = lm(Y ~ . -mu, data=df_train)
+  best.step = step(nk.ols, k=2, trace=0)  # AIC
+  coef.best.step = coef(best.step)
+  
+  X_train = as.matrix(select(df_train,-Y,-mu))
+  X_test = as.matrix(select(df_test,-Y,-mu))
+  
+  # Check if it's the true model
+  names.coef.true <- names(coef(nk.ols))
+  names.coef.best.step <- names(coef(best.step))
+  SELECT.TRUE.AIC[i] <- all(names.coef.true[betatrue!=0] == names.coef.best.step)
+  
+  # Estimating beta
+  id.coef.best.step <- match(names.coef.best.step, names.coef.true)
+  coef.best.step.fill <- rep(0,length(betatrue))
+  coef.best.step.fill[id.coef.best.step] <- coef(best.step)
+  RMSE.AIC.BETA[i] = sqrt(mean((betatrue - coef.best.step.fill)^2))
+  
+  # Estimating mu
+  RMSE.AIC.MU[i] = sqrt(mean((df_train$mu - predict(best.step))^2))
+  
+  # Out of sample prediction of Y
+  RMSE.AIC.YTEST[i] = sqrt(mean((df_test$Y - predict(best.step,newdata=data.frame(X_test)))^2))
+}
+```
+
+
+```{r}
+# Plot the results
+par(mfrow=c(1,3))
+hist(RMSE.AIC.BETA, main="a) RMSE for beta")
+abline(v=mean(RMSE.AIC.BETA),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.AIC.MU, main="b) RMSE for mu")
+abline(v=mean(RMSE.AIC.MU),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.AIC.YTEST, main="c) RMSE for Y")
+abline(v=mean(RMSE.AIC.YTEST),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+```
+
+And here's the fraction of times we selected the true model:
+```{r}
+mean(SELECT.TRUE.AIC)
+```
+
+
+4.  Take a look at the summaries from the estimates under the best AIC model from the simulation that is equal to your team number.  Create confidence intervals for the $\beta$'s and comment on whether they include zero or not or the true value.
+
+```{r}
+team_number <- 1
+
+# Load data
+rm(df_train,df_test)
+load(fname_train[team_number])
+
+# Find the best model
+nk.ols = lm(Y ~ . -mu, data=df_train)
+best.step = step(nk.ols, k=2, trace=0)  # AIC
+id.coef.best.step <- match(names(coef(best.step)), names(coef(nk.ols)))
+
+CI <- confint(best.step)
+contains_zero <- CI[,1] < 0 & CI[,2]>0
+contains_betatrue <- CI[,1] < betatrue[id.coef.best.step] & CI[,2]>betatrue[id.coef.best.step]
+
+table <- data.frame(betatrue[id.coef.best.step],
+                    round(CI[,1],2),
+                    round(coef(best.step),2),
+                    round(CI[,2],2),
+                    contains_zero,
+                    contains_betatrue)
+colnames(table) <- c("Beta_true","2.5% CI","Estimate","97.5% CI","Contains Zero?","Contains Beta_true?")
+kable(table,caption="Confidence intervals for best AIC model")
+```
+
+
+5.   Use BIC with either stepwise or all possible subsets to select a model and then use OLS to estimate the parameters under that model.  Use the estimates to compute the RMSE for a) estimating $\beta^{true}$, b) $\mu^{true}$, and c) predicting $Y^{test}$. Present  histograms of the RMSE, and show where the average RMSE falls on the plot.   Also report d) the number of times you select the true model using BIC out of the 100 simulations. 
+
+```{r}
+RMSE.BIC.BETA  = rep(NA,100)
+RMSE.BIC.MU  = rep(NA,100)
+RMSE.BIC.YTEST  = rep(NA,100)
+SELECT.TRUE.BIC = rep(NA,100)
+
+for( i in 1:100) {
+  rm(df_train,df_test)
+  load(fname_train[i])
+  load(fname_test[i])
+  
+  nk.ols = lm(Y ~ . -mu, data=df_train)
+  best.step = step(nk.ols, k=log(dim(df_train)[1]), trace=0)  # BIC
+  coef.best.step = coef(best.step)
+  
+  X_train = as.matrix(select(df_train,-Y,-mu))
+  X_test = as.matrix(select(df_test,-Y,-mu))
+  
+  # Check if it's the true model
+  names.coef.true <- names(coef(nk.ols))
+  names.coef.best.step <- names(coef(best.step))
+  SELECT.TRUE.BIC[i] <- all(names.coef.true[betatrue!=0] == names.coef.best.step)
+  
+  # Estimating beta
+  id.coef.best.step <- match(names.coef.best.step, names.coef.true)
+  coef.best.step.fill <- rep(0,length(betatrue))
+  coef.best.step.fill[id.coef.best.step] <- coef(best.step)
+  RMSE.BIC.BETA[i] = sqrt(mean((betatrue - coef.best.step.fill)^2))
+  
+  # Estimating mu
+  RMSE.BIC.MU[i] = sqrt(mean((df_train$mu - predict(best.step))^2))
+  
+  # Out of sample prediction of Y
+  RMSE.BIC.YTEST[i] = sqrt(mean((df_test$Y - predict(best.step,newdata=data.frame(X_test)))^2))
+}
+```
+
+
+```{r}
+# Plot the results
+par(mfrow=c(1,3))
+hist(RMSE.BIC.BETA, main="a) RMSE for beta")
+abline(v=mean(RMSE.BIC.BETA),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BIC.MU, main="b) RMSE for mu")
+abline(v=mean(RMSE.BIC.MU),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BIC.YTEST, main="c) RMSE for Y")
+abline(v=mean(RMSE.BIC.YTEST),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+```
+
+And here's the fraction of times we selected the true model:
+```{r}
+mean(SELECT.TRUE.BIC)
+```
+
+6.  Take a look at the summaries from the estimates under the best BIC model from the simulation that is equal to your team number.  Create confidence intervals for the $\beta$'s and comment on whether they include zero or not or the true value.
+
+```{r}
+team_number <- 1
+
+# Load data
+rm(df_train,df_test)
+load(fname_train[team_number])
+
+# Find the best model
+nk.ols = lm(Y ~ . -mu, data=df_train)
+best.step = step(nk.ols, k=log(dim(df_train)[1]), trace=0)  # BIC
+id.coef.best.step <- match(names(coef(best.step)), names(coef(nk.ols)))
+
+CI <- confint(best.step)
+contains_zero <- CI[,1] < 0 & CI[,2]>0
+contains_betatrue <- CI[,1] < betatrue[id.coef.best.step] & CI[,2]>betatrue[id.coef.best.step]
+
+table <- data.frame(betatrue[id.coef.best.step],
+                    round(CI[,1],2),
+                    round(coef(best.step),2),
+                    round(CI[,2],2),
+                    contains_zero,
+                    contains_betatrue)
+colnames(table) <- c("Beta_true","2.5% CI","Estimate","97.5% CI","Contains Zero?","Contains Beta_true?")
+kable(table,caption="Confidence intervals for best BIC model")
+```
+
+7. Theory (work individually and then combine to add group solution, try to complete by Wednesday before class)
+For the linear model, assume that the $X$ have been centered so that they all have mean 0.  For the linear model
+$$Y \sim N(1_n \beta_0 + X \beta, I_n/\phi)
+$$
+using Zellner's $g$-prior for  $\beta$ with 
+$$\beta \mid \beta_0, \phi \sim N(0, g (X^TX)^{-1}/\phi)
+$$
+and the improper independent Jeffrey's prior $$p(\beta_0, \phi) \propto 1/\phi$$
+find the a) posterior distriubtion of $\beta \mid Y, g, \phi$, b) posterior distribution of $\mu_i = x^T_i \beta \mid Y, g, \phi$ and c) the posterior predictive distribution of $Y^{test} \mid Y, g, \phi$ as functions of the OLS/MLE summaries. _(you may use results in notes - just quote - or derive)_
+
+
+
+\begin{gather*}
+The\ posterior\ distribution\ of\ \beta \\
+p(\beta|Y,g,\phi) = \frac{p(\beta|\beta_0, \phi, g)p(Y|\beta,\beta_0,\phi,g)}{\int p(\beta|\beta_0, \phi, g)p(Y|\beta,\beta_0,\phi,g)}\\
+\propto p(\beta|\beta_0, \phi, g)p(Y|\beta,\beta_0,\phi,g)\\
+\propto |\Sigma_0|^{-\frac{1}{2}}exp(-\frac{\beta^T(\Sigma_0)^{-1}\beta}{2})|\frac{I_n}{\phi}|^{-\frac{1}{2}}exp(-\frac{(Y-(1\beta_0+X\beta))^T(\frac{I_n}{\phi})^{-1}(Y-(1\beta_0+X\beta))}{2})\\
+\propto exp(-\frac{1}{2}(-2YX\beta+2\beta_0X\beta+(X\beta)^TX\beta)(\frac{I_n}{\phi})^{-1})+\beta^T(\Sigma_0)^{-1}\beta)\\
+\propto exp(\beta^T(XTY\phi - 1\beta_0X\phi)-\frac{1}{2}(\beta^T(X^TX\phi + (\Sigma_0)^{-1})\beta))\\
+where\ \Sigma_0 = g(X^TX)^{-1}/\phi .\\
+Then\ we\ can\ get\ var(\beta|Y,g\phi) = \frac{g}{1+g}(X^TX)^{-1}/\phi \\
+and E(\beta|Y,g\phi) = \frac{g}{1+g}(X^TX)^{-1}X^T(Y - 1\beta_0) = \frac{g}{1+g}\hat{\beta}\\
+\\
+The\ posterior\ distribution\ of\ \mu_i \\
+E(\mu_i|Y,g,\phi) = E(x_i^T\beta|Y,g,\phi) = x_i^TE(\beta|Y,g,\phi) = \frac{g}{1+g}x_i^T\hat{\beta} \\
+var(\mu_i|Y,g,\phi) = var(x_i^T\beta|Y,g,\phi) = x_i^Tvar(\beta|Y,g,\phi)x_i = \frac{g}{1+g}x_i^T(X^TX)^{-1}x_i/\phi \\
+\\
+The\ predictive\ posterior\ distribution\ of\ Y^{test}\\
+E(Y^{test}|Y,g,\phi) = E(1_n \beta_0 + X \beta + \epsilon|Y,g,\phi) = 1_n \beta_0 + \frac{g}{1+g}x_i^T\hat{\beta}\\
+var(Y^{test}|Y,g,\phi) = var(1_n \beta_0 + X \beta + \epsilon|Y,g,\phi) = \frac{g}{1+g}x_i^T(X^TX)^{-1}x_i/\phi + 1_n
+\end{gather*}
+
+
+8. What are the corresponding distributions in 7) unconditional on $\phi$?  (hint recall theorem from class)  Are $\beta_0$ and $\beta$ still independent?  Explain.
+
+\begin{gather*}
+The\ posterior\ distribution\ of\ \beta \\
+p(\beta|Y,g) = \int p(\beta|\phi,Y,g)p(\phi|Y,g)d\phi \\
+\propto \int |\frac{g}{1+g}(X^TX)^{-1}\phi^{-1}exp(-(\beta - \frac{g}{1+g}\hat{\beta})^T(\frac{g}{1+g}(X^TX)^{-1}\phi^{-1})^{-1}(\beta - \frac{g}{1+g}\hat{\beta}))(||Y-X\hat{\beta}||^2/2)^{(n-p)/2}/\Gamma(\frac{n-p}{2})\phi^{(n-p)/2 - 1}exp(-||Y-X\hat{\beta}||^2/2\phi)d\phi \\
+\propto \int exp(-\phi/2(||Y-X\hat{\beta}||^2 + (\beta - \frac{g}{1+g}\hat{\beta})^T(\frac{1+g}{g}(X^TX))(\beta - \frac{g}{1+g}\hat{\beta})))d\phi \\
+\propto (||Y-X\hat{\beta}||^2 + (\beta - \frac{g}{1+g}\hat{\beta})^T(\frac{1+g}{g}(X^TX))(\beta - \frac{g}{1+g}\hat{\beta}))^{(n-p)/2} \\
+\propto ((n-p-1)+\frac{(\beta - \frac{g}{1+g}\hat{\beta})^T(\beta - \frac{g}{1+g}\hat{\beta})}{\frac{g}{1+g}(X^TX)^{-1}||Y-X\hat{\beta}||^2/(n-p-1)})^{-\frac{n-p-1+1}{2}}\\
+\sim t_{n-p-1}(\frac{g}{1+g}\hat{\beta}, \frac{g}{1+g}(X^TX)^{-1}||Y-X\hat{\beta}||^2/(n-p-1))\\
+\sim t_{n-p-1}(\frac{g}{1+g}\hat{\beta}, \frac{g}{1+g}(X^TX)^{-1}\hat(\sigma)^2)\\
+\\
+The\ posterior\ distribution\ of\ \mu_i \\
+E(\mu_i|Y,g) = E(x_i^T\beta|Y,g) = x_i^TE(\beta|Y,g) = \frac{g}{1+g}x_i^T\hat{\beta}\\
+var(\mu_i|Y,g) = var(x_i^T\beta|Y,g) = x_i^Tvar(\beta|Y,g)x_i = \frac{g}{1+g}x_i^T(X^TX)^{-1}x_i\hat(\sigma)^2\\
+\\
+The\ predictive\ posterior\ distribution\ of\ Y^{test}\\
+E(Y^{test}|Y,g) = E(1_n \beta_0 + X \beta + \epsilon|Y,g) = 1_n \beta_0 + \frac{g}{1+g}x_i^T\hat{\beta}\\
+var(Y^{test}|Y,g) = var(1_n \beta_0 + X \beta + \epsilon|Y,g) = \frac{g}{1+g}x_i^T(X^TX)^{-1}x_i\hat(\sigma)^2 + 1_n\\
+\end{gather*}
+Since the $\beta$ now depends on the estimated $\sigma^2$, which can be calculated by $(||Y-1_n\beta_0-X\beta||^2)/(n-p-1)$. Then $\beta$ and $\beta_0$ are not independent now. 
+
+
+
+9. Let $\tau = 1/g$ and substitute that in the prior for $\beta$
+$$\beta \mid \beta_0, \phi \sim N(0, (X^TX)^{-1}/(\tau \phi))
+$$
+If $\tau \sim G(1/2, n/2)$, show that the prior on $\beta$ is a Cauchy Distribution 
+$$\beta \mid  \phi, \beta_0 \sim C(0,  (X^TX/n)^{-1}/\phi)$$
+_(a Cauchy distribution is a Student t with 1 df - see notes for density)_
+
+\begin{gather*}
+p(\beta|\beta_0, \phi) = \int p(\beta| \phi, \beta_0, \tau)p(\tau| \phi, \beta_0) d\tau\\
+= \int |\frac{(X^TX)^{-1}}{\tau\phi}|^{-1/2}exp(-\frac{\beta^T(X^TX)^{-1}/(\tau\phi)\beta}{2})\frac{(n/2)^(1/2)}{\Gamma(1/2)}\tau^{1/2-1}exp(-n/2\tau)d\tau\\
+\propto \int exp(-\tau/2 (\beta^T(X^TX\phi)\beta+n))d\tau \\
+\propto (\beta^T(X^TX\phi)\beta+n)^{-1/2}\\
+= (1 + \frac{\beta^T\beta}{(X^TX)^{-1}n/\tau})^{-1/2}\\
+\sim t_1 (0, (X^TX)^{-1}\frac{n}{\tau}) = t_1 (0, ((X^TX)/n)^{-1}/\tau) = Cauchy (0, ((X^TX)/n)^{-1}/\tau) \\
+\end{gather*}
+
+
+
+
+
+_To speed up running time for the next set of problems, do the calculations for 9-13 in one named code chunk. then use separate code chunks to provide the necessary solutions for the different parts.  Test code using one or two simulated data sets, before running on all simulated data sets.  Once you are satisfied set cache=TRUE for the code chunk._
+
+10.  Using Bayesian variable selection under the $g$-prior with $g = n$ and a uniform prior distribution over models,  find the highest posterior probability model (HPM)  using `bas.lm` from library `BAS` (or other software). (If you use `BAS`, please download `BAS` version 1.4.3 from CRAN).  Using the mean of the appropriate posterior distribution under the HPM, find the average RMSE for a) estimating $\beta^{true}$, b) estimating $\mu^{true}$ and c) predicting $Y^{test}$.  Plot histograms of the RMSE and add the average RMSE to the plots.   What proportion of the time did you select the true model?   Your answer should describe whether you used enumeration or MCMC, number of iterations or models, etc.  If you used MCMC, check diagnostic plots to examin convergence.  
+Note `BAS` has functions to compute the fitted values `fitted` and predicted values `predict` for the HPM (see the vignette or help files), however, to find the posterior mean for the beta's for a given model, we need to extract the information from the object.  The following function can be use to do this. 
+
+```{r}
+coef.HPM = function(object) {
+  best = which.max(object$postprobs)
+  model = object$which[[best]]
+  post.mean = object$mle[[best]]*object$shrinkage[best]
+  post.mean[1] = object$mle[[best]]
+  return(list(HPM = model, betahat = post.mean))
+}
+
+
+coef.BPM = function(object) {
+  bpm = predict(object, estimator="BPM")
+  for(i in 1:length(object$which)){
+    if(all(object$which[[i]] == bpm$bestmodel)){
+      best = i
+      break;
+    }
+  }
+  model = bpm$bestmodel
+  post.mean = object$mle[[best]]*object$shrinkage[best]
+  post.mean[1] = object$mle[[best]]
+  return(list(BPM = model, betahat = post.mean))
+}
+
+```
+```{r cache=TRUE}
+team_number <- 1
+
+RMSE.BAS.BETA  = rep(NA,100)
+RMSE.BAS.MU  = rep(NA,100)
+RMSE.BAS.YTEST  = rep(NA,100)
+SELECT.TRUE.BAS = rep(NA,100)
+
+RMSE.BMA.BETA  = rep(NA,100)
+RMSE.BMA.MU  = rep(NA,100)
+RMSE.BMA.YTEST  = rep(NA,100)
+
+RMSE.BPM.BETA  = rep(NA,100)
+RMSE.BPM.MU  = rep(NA,100)
+RMSE.BPM.YTEST  = rep(NA,100)
+SELECT.TRUE.BPM = rep(NA,100)
+
+for( i in 1:100) {
+  rm(df_train,df_test)
+  load(fname_train[i])
+  load(fname_test[i])
+
+  df.bas = bas.lm(Y ~ . -mu, data=df_train,
+                prior="g-prior", a=nrow(df_train), modelprior=uniform(),
+                method="MCMC", MCMC.iterations = 20000, thin = 20)
+  
+  best.bas = coef.HPM(df.bas)
+  best.bma = coef.bas(df.bas)
+  best.bpm = coef.BPM(df.bas)
+  
+  X_train = as.matrix(select(df_train,-Y,-mu))
+  X_test = as.matrix(select(df_test,-Y,-mu))
+  ##HPM
+  #found true
+  SELECT.TRUE.BAS[i] <- all((best.bas$HPM+1)==which(betatrue!=0) )
+  #beta
+  coef.best.bas <- rep(0, length(betatrue))
+  coef.best.bas[best.bas$HPM+1] <- best.bas$betahat    
+  RMSE.BAS.BETA[i]<- sqrt(mean((betatrue-coef.best.bas)^2)) 
+  #mu
+  RMSE.BAS.MU[i]<- sqrt(mean((df_train$mu -fitted(df.bas, estimator = "HPM"))^2))
+  #ytest
+  pred.best.bas <- predict(df.bas, X_test, estimator = "HPM")
+  RMSE.BAS.YTEST[i] <- sqrt(mean((df_test$Y - pred.best.bas$fit)^2)) 
+
+  ##bma
+  #beta
+  RMSE.BMA.BETA[i] <-sqrt(mean((betatrue-best.bma$postmean)^2))
+  #estimate mu
+  RMSE.BMA.MU[i] <- sqrt(mean((df_train$mu -fitted(df.bas, estimator = "BMA"))^2))
+  #predict y
+  pred.best.bma <- predict(df.bas, X_test, estimator = "BMA")
+  RMSE.BMA.YTEST[i] <- sqrt(mean((df_test$Y - pred.best.bma$fit)^2)) 
+  
+  ##bpm
+  SELECT.TRUE.BPM[i] <- all((best.bpm$BPM+1)==which(betatrue!=0) )
+  #estimate beta
+  coef.best.bpm <- rep(0, length(betatrue))
+  coef.best.bpm[best.bpm$BPM+1] <- best.bpm$betahat    
+  RMSE.BPM.BETA[i]<- sqrt(mean((betatrue-coef.best.bpm)^2)) 
+  #estimate mu
+  RMSE.BPM.MU[i]<- sqrt(mean((df_train$mu -fitted(df.bas, estimator = "BPM"))^2))
+  #predict y
+  pred.best.bpm <- predict(df.bas, X_test, estimator = "BPM")
+  RMSE.BPM.YTEST[i] <- sqrt(mean((df_test$Y - pred.best.bpm$fit)^2)) 
+
+  if(i==team_number){
+    #check diagnostics
+    par(mfrow = c(1,3))
+    diagnostics(df.bas)
+    plot(df.bas, which = c(1, 2))
+    df.bas1 <- df.bas
+    best.bas1 <- best.bas
+    beta.best.bas1 <- coef.best.bas
+    best.bma1 <- best.bma
+    best.bpm1 <- best.bpm
+    beta.best.bpm1 <- coef.best.bpm
+  }
+  
+}
+
+```
+
+We used MCMC with 20000 iterations and taking every 20th one. Based on the diagnostic plots from the first simulation, there is not a lot of bias when comparing renormalized and MCMC estimates. The residuals do not appear to have a trend, and the cumulative probability after 250 unique models is also almost 1, indicating that we have reached convergence. 
+
+
+```{r}
+# Plot the results
+par(mfrow=c(1,3))
+hist(RMSE.BAS.BETA, main="a) RMSE for beta")
+abline(v=mean(RMSE.BAS.BETA),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BAS.MU, main="b) RMSE for mu")
+abline(v=mean(RMSE.BAS.MU),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BAS.YTEST, main="c) RMSE for Y")
+abline(v=mean(RMSE.BAS.YTEST),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+```
+
+The fraction of times the true model was selected:
+
+```{r}
+mean(SELECT.TRUE.BAS)
+```
+
+
+ (Look at before Wednesday to be prepared to ask any questions)
+
+11.  Using the simulation that is equal to your team numbers, provide posterior summaries of the coefficient's of the HPM, such as Bayesian Confidence intervals.  
+Comment on whether the intervals contain the true value or zero.
+
+```{r}
+
+# Load data
+rm(df_train,df_test)
+load(fname_train[team_number])
+hpm = predict(df.bas1, estimator="HPM")
+for(i in 1:length(df.bas1$which)){
+  if(all(df.bas1$which[[i]] == hpm$bestmodel)){
+    best = i
+    break;
+  }
+}
+CI <- confint(coef(df.bas1, n.models = best))
+
+contains_zero <- CI[,1] <= 0 & CI[,2]>=0
+contains_betatrue <- CI[,1] <= betatrue & CI[,2]>=betatrue
+
+table <- data.frame(betatrue,
+                    round(CI[,1],2),
+                    round(beta.best.bas1,2),
+                    round(CI[,2],2),
+                    contains_zero,
+                    contains_betatrue)
+colnames(table) <- c("Beta_true","2.5% CI","Estimate","97.5% CI","Contains Zero?","Contains Beta_true?")
+kable(table,caption="Confidence intervals for Bayesian variable selection model with highest posterior probability")
+plot(CI)
+points(1:length(betatrue), betatrue, col=2)
+```
+
+12.  To incorporate model uncertainty we could use  Bayesian Model Averaging, rather than the highest probability model. Repeat 10 and 11 using BMA for estimating the quantities.  
+```{r}
+
+# Plot the results
+par(mfrow=c(1,3))
+hist(RMSE.BMA.BETA, main="a) RMSE for beta")
+abline(v=mean(RMSE.BMA.BETA),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BMA.MU, main="b) RMSE for mu")
+abline(v=mean(RMSE.BMA.MU),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BMA.YTEST, main="c) RMSE for Y")
+abline(v=mean(RMSE.BMA.YTEST),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+CI = confint(best.bma1)
+contains_zero <- CI[,1] <= 0 & CI[,2]>=0
+contains_betatrue <- CI[,1] <= betatrue & CI[,2]>=betatrue
+
+table <- data.frame(betatrue,
+                    round(CI[,1],2),
+                    round(best.bma1$postmean,2),
+                    round(CI[,2],2),
+                    contains_zero,
+                    contains_betatrue)
+colnames(table) <- c("Beta_true","2.5% CI","Estimate","97.5% CI","Contains Zero?","Contains Beta_true?")
+kable(table,caption="Confidence intervals for Bayesian Model Averaging")
+```
+
+
+13.  If we wanted to select the model that is "closest" to BMA,  we could use the model whose predictions are closest to BMA  using squared error loss.  We can find the best predictive model `BPM` from `BAS` using the predict function with `estimator="BPM"`.   Repeat 10 and 11 using the Best Predictive Model, `BPM`.
+
+
+```{r }
+# Plot the results
+par(mfrow=c(1,3))
+hist(RMSE.BPM.BETA, main="a) RMSE for beta")
+abline(v=mean(RMSE.BPM.BETA),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BPM.MU, main="b) RMSE for mu")
+abline(v=mean(RMSE.BPM.MU),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BPM.YTEST, main="c) RMSE for Y")
+abline(v=mean(RMSE.BPM.YTEST),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+```
+
+```{r}
+
+bpm = predict(df.bas1, estimator="BPM")
+for(i in 1:length(df.bas1$which)){
+  if(all(df.bas1$which[[i]] == bpm$bestmodel)){
+    best = i
+    break;
+  }
+}
+  
+
+CI <- confint(coef(df.bas1, n.models = best))
+
+
+contains_zero <- CI[,1] <= 0 & CI[,2]>=0
+contains_betatrue <- CI[,1] <= betatrue & CI[,2]>=betatrue
+
+table <- data.frame(betatrue,
+                    round(CI[,1],2),
+                    round(beta.best.bpm1,2),
+                    round(CI[,2],2),
+                    contains_zero,
+                    contains_betatrue)
+colnames(table) <- c("Beta_true","2.5% CI","Estimate","97.5% CI","Contains Zero?","Contains Beta_true?")
+kable(table,caption="Confidence intervals for best predictive model")
+plot(CI)
+points(1:length(betatrue), betatrue, col=2)
+```
+
+
+14.  Are the Bayesian estimates sensitive to the choice of prior?  Try 10-13 using the Zellner-Siow Cauchy prior (option `prior = "ZS-null"` in `bas.lm`) 
+
+
+```{r cache=TRUE}
+team_number <- 1
+
+RMSE.BAS.BETA.ZS  = rep(NA,100)
+RMSE.BAS.MU.ZS  = rep(NA,100)
+RMSE.BAS.YTEST.ZS  = rep(NA,100)
+SELECT.TRUE.BAS.ZS = rep(NA,100)
+
+RMSE.BMA.BETA.ZS  = rep(NA,100)
+RMSE.BMA.MU.ZS  = rep(NA,100)
+RMSE.BMA.YTEST.ZS  = rep(NA,100)
+
+
+RMSE.BPM.BETA.ZS  = rep(NA,100)
+RMSE.BPM.MU.ZS  = rep(NA,100)
+RMSE.BPM.YTEST.ZS  = rep(NA,100)
+SELECT.TRUE.BPM.ZS = rep(NA,100)
+
+for( i in 1:100) {
+  rm(df_train,df_test)
+  load(fname_train[i])
+  load(fname_test[i])
+
+  df.bas = bas.lm(Y ~ . -mu, data=df_train,
+                prior="ZS-null", a=nrow(df_train), modelprior=uniform(),
+                method="MCMC", MCMC.iterations = 20000, thin = 20)
+  
+  best.bas = coef.HPM(df.bas)
+  best.bma = coef.bas(df.bas)
+  best.bpm = coef.BPM(df.bas)
+  
+  X_train = as.matrix(select(df_train,-Y,-mu))
+  X_test = as.matrix(select(df_test,-Y,-mu))
+  ##HPM
+  #found true
+  SELECT.TRUE.BAS.ZS[i] <- all((best.bas$HPM+1)==which(betatrue!=0) )
+  #beta
+  coef.best.bas <- rep(0, length(betatrue))
+  coef.best.bas[best.bas$HPM+1] <- best.bas$betahat    
+  RMSE.BAS.BETA.ZS[i]<- sqrt(mean((betatrue-coef.best.bas)^2)) 
+  #mu
+  RMSE.BAS.MU.ZS[i]<- sqrt(mean((df_train$mu -fitted(df.bas, estimator = "HPM"))^2))
+  #ytest
+  pred.best.bas <- predict(df.bas, X_test, estimator = "HPM")
+  RMSE.BAS.YTEST.ZS[i] <- sqrt(mean((df_test$Y - pred.best.bas$fit)^2)) 
+
+  ##bma
+  #beta
+  RMSE.BMA.BETA.ZS[i] <-sqrt(mean((betatrue-best.bma$postmean)^2))
+  #estimate mu
+  RMSE.BMA.MU.ZS[i] <- sqrt(mean((df_train$mu -fitted(df.bas, estimator = "BMA"))^2))
+  #predict y
+  pred.best.bma <- predict(df.bas, X_test, estimator = "BMA")
+  RMSE.BMA.YTEST.ZS[i] <- sqrt(mean((df_test$Y - pred.best.bma$fit)^2)) 
+  
+  ##bpm
+  SELECT.TRUE.BPM.ZS[i] <- all((best.bpm$BPM+1)==which(betatrue!=0) )
+  #estimate beta
+  coef.best.bpm <- rep(0, length(betatrue))
+  coef.best.bpm[best.bpm$BPM+1] <- best.bpm$betahat    
+  RMSE.BPM.BETA.ZS[i]<- sqrt(mean((betatrue-coef.best.bpm)^2)) 
+  #estimate mu
+  RMSE.BPM.MU.ZS[i]<- sqrt(mean((df_train$mu -fitted(df.bas, estimator = "BPM"))^2))
+  #predict y
+  pred.best.bpm <- predict(df.bas, X_test, estimator = "BPM")
+  RMSE.BPM.YTEST.ZS[i] <- sqrt(mean((df_test$Y - pred.best.bpm$fit)^2)) 
+
+  if(i==team_number){
+    #check diagnostics
+    par(mfrow = c(1,3))
+    diagnostics(df.bas)
+    plot(df.bas, which = c(1, 2))
+    df.bas1 <- df.bas
+    best.bas1 <- best.bas
+    beta.best.bas1 <- coef.best.bas
+    best.bma1 <- best.bma
+    best.bpm1 <- best.bpm
+    beta.best.bpm1 <- coef.best.bpm
+  }
+  
+  
+  
+}
+
+```
+
+The diagnostic plots using this prior also indicate appropriate fit and convergence. The following sections are done using the same code as in 10-13.
+
+
+```{r echo=FALSE}
+# Plot the results
+par(mfrow=c(1,3))
+hist(RMSE.BAS.BETA.ZS, main="a) RMSE for beta")
+abline(v=mean(RMSE.BAS.BETA.ZS),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BAS.MU.ZS, main="b) RMSE for mu")
+abline(v=mean(RMSE.BAS.MU.ZS),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BAS.YTEST.ZS, main="c) RMSE for Y")
+abline(v=mean(RMSE.BAS.YTEST.ZS),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+```
+
+```{r echo=FALSE}
+hpm = predict(df.bas1, estimator="HPM")
+for(i in 1:length(df.bas1$which)){
+  if(all(df.bas1$which[[i]] == hpm$bestmodel)){
+    best = i
+    break;
+  }
+}
+CI <- confint(coef(df.bas1, n.models = best))
+
+contains_zero <- CI[,1] <= 0 & CI[,2]>=0
+contains_betatrue <- CI[,1] <= betatrue & CI[,2]>=betatrue
+
+table <- data.frame(betatrue,
+                    round(CI[,1],2),
+                    round(beta.best.bas1,2),
+                    round(CI[,2],2),
+                    contains_zero,
+                    contains_betatrue)
+colnames(table) <- c("Beta_true","2.5% CI","Estimate","97.5% CI","Contains Zero?","Contains Beta_true?")
+kable(table,caption="Confidence intervals for Bayesian variable selection model with highest posterior probability")
+```
+
+
+```{r echo=FALSE}
+
+# Plot the results
+par(mfrow=c(1,3))
+hist(RMSE.BMA.BETA.ZS, main="a) RMSE for beta")
+abline(v=mean(RMSE.BMA.BETA.ZS),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BMA.MU.ZS, main="b) RMSE for mu")
+abline(v=mean(RMSE.BMA.MU.ZS),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BMA.YTEST.ZS, main="c) RMSE for Y")
+abline(v=mean(RMSE.BMA.YTEST.ZS),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+CI = confint(best.bma1)
+contains_zero <- CI[,1] <= 0 & CI[,2]>=0
+contains_betatrue <- CI[,1] <= betatrue & CI[,2]>=betatrue
+
+table <- data.frame(betatrue,
+                    round(CI[,1],2),
+                    round(best.bma1$postmean,2),
+                    round(CI[,2],2),
+                    contains_zero,
+                    contains_betatrue)
+colnames(table) <- c("Beta_true","2.5% CI","Estimate","97.5% CI","Contains Zero?","Contains Beta_true?")
+kable(table,caption="Confidence intervals for Bayesian model averaging")
+```
+
+```{r echo=FALSE}
+# Plot the results
+par(mfrow=c(1,3))
+hist(RMSE.BPM.BETA.ZS, main="a) RMSE for beta")
+abline(v=mean(RMSE.BPM.BETA.ZS),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BPM.MU.ZS, main="b) RMSE for mu")
+abline(v=mean(RMSE.BPM.MU.ZS),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+hist(RMSE.BPM.YTEST.ZS, main="c) RMSE for Y")
+abline(v=mean(RMSE.BPM.YTEST.ZS),col="red")
+legend("topright", legend="Average RMSE", lty=1, col="red")
+
+```
+
+```{r echo=FALSE}
+
+bpm.ZS = predict(df.bas1, estimator="BPM")
+for(i in 1:length(df.bas1$which)){
+  if(all(df.bas1$which[[i]] == bpm.ZS$bestmodel)){
+    best.ZS = i
+    break;
+  }
+}
+  
+
+CI <- confint(coef(df.bas1, n.models = best.ZS))
+
+contains_zero <- CI[,1] <= 0 & CI[,2]>=0
+contains_betatrue <- CI[,1] <= betatrue & CI[,2]>=betatrue
+
+table <- data.frame(betatrue,
+                    round(CI[,1],2),
+                    round(beta.best.bpm1,2),
+                    round(CI[,2],2),
+                    contains_zero,
+                    contains_betatrue)
+colnames(table) <- c("Beta_true","2.5% CI","Estimate","97.5% CI","Contains Zero?","Contains Beta_true?")
+kable(table,caption="Confidence intervals for best predictive model")
+
+```
+
+
+
+15.  Provide a summary of your simulation findings, with a table for the RMSEs for the different methods and parameters of interest $\beta$, $\mu$, $Y^{test}$ and proportion of time true model was selected.
+Does any one method seem to do better than the others or are some methods better for one estimation/prediction problem than the others?  Explain.
+For the energetic team - what about coverage?
+
+```{r}
+OLS.model = c(beta = mean(RMSE.OLS.BETA), mu = mean(RMSE.OLS.MU), 
+              YTEST = mean(RMSE.OLS.YTEST),selecttrue = NA)
+AIC.model = c(beta = mean(RMSE.AIC.BETA), mu = mean(RMSE.AIC.MU), 
+              YTEST = mean(RMSE.AIC.YTEST),selecttrue = mean(SELECT.TRUE.AIC))
+BIC.model = c(beta = mean(RMSE.AIC.BETA), mu = mean(RMSE.AIC.MU), 
+              YTEST = mean(RMSE.AIC.YTEST),selecttrue = mean(SELECT.TRUE.BIC))
+BAS.G.model = c(beta = mean(RMSE.BAS.BETA), mu = mean(RMSE.BAS.MU), 
+                YTEST = mean(RMSE.BAS.YTEST),selecttrue = mean(SELECT.TRUE.BAS))
+BPM.G.model = c(beta = mean(RMSE.BPM.BETA), mu = mean(RMSE.BPM.MU), 
+                YTEST = mean(RMSE.BPM.YTEST),selecttrue = mean(SELECT.TRUE.BPM))
+BAS.ZS.model = c(beta = mean(RMSE.BAS.BETA.ZS), mu = mean(RMSE.BAS.MU.ZS), 
+                YTEST = mean(RMSE.BAS.YTEST.ZS),selecttrue = mean(SELECT.TRUE.BAS.ZS))
+BPM.ZS.model = c(beta = mean(RMSE.BPM.BETA.ZS), mu = mean(RMSE.BPM.MU.ZS), 
+                YTEST = mean(RMSE.BPM.YTEST.ZS),selecttrue = mean(SELECT.TRUE.BPM.ZS))
+
+df = cbind(data.frame(OLS.model),data.frame(AIC.model),data.frame(BIC.model),data.frame(BAS.G.model),data.frame(BPM.G.model),data.frame(BAS.ZS.model),data.frame(BPM.ZS.model))
+
+df = t(df)
+
+kable(round(df,4))
+
+```
+
+
+First of all, based on the above table, we can find that BIC and AIC methods can reduce RMSE of the simple OLS model to the same level, which implies the best models chosen from BIC and AIC are the same and they are better than simple OLS model.
+
+Secondly, the HPM and BPM models chosen from Bayesian regression model are better than OLS models, which implies Bayesian regression model is the better one for this data.
+
+Thirdly, within the Bayseian regression model, using g-prior prior distribution can get better estimation results than using ZS-null prior distribution.
+
+At last, given prior distribution, BPM model seems to do slightly better than HPM model in estimating parameters and Y.
+
+
+
+
