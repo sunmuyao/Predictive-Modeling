@@ -1,0 +1,860 @@
+---
+title: 'Model Selection'
+author: "Muyao Sun"
+date: "February 17, 2016"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+
+```{r setup, echo=FALSE}
+suppressMessages(library(ISLR))
+suppressMessages(library(arm))
+suppressMessages(library(ggplot2))
+suppressMessages(library(dplyr))
+suppressMessages(library(GGally))
+library(knitr)
+# post on piazza for additional packages if there are wercker build errors due to missing packages
+```
+
+Load the college application data from Lab1 and create the variable `Elite` by binning the `Top10perc` variable. We are going to divide universities into two groups based on whether or not the proportion of students coming from the top 10% of their high school classes exceeds 50 %.  We will also save the College names as a new variable and remove `Accept` and `Enroll` as temporally they occur after applying, and do not make sense as predictors in future data.
+
+```{r data}
+data(College)
+College = College %>% 
+  mutate(college = rownames(College)) %>%
+  mutate(Elite = factor(Top10perc > 50)) %>%
+  mutate(Elite = 
+           recode(Elite, 'TRUE' = "Yes", 'FALSE'="No")) %>%
+  dplyr::select(c(-Accept, -Enroll))
+```
+
+We are going to create a training and test set by randomly splitting the data.  First set a random seed by
+
+```{r setseed}
+# do not change this; for a break google `8675309`
+set.seed(8675309)
+n = nrow(College)
+n.train = floor(.75*n)
+train = sample(1:n, size=n.train, replace=FALSE)
+College.train = College[train,]
+College.test = College[-train,]
+RMSE_Obs = rep(0,5)
+RMSE_Test = rep(0,5)
+coveragedata = rep(0,5)
+pvalue = rep(0,5)
+```
+
+
+1.  Summarize the training and test data, and comment on which variables are numeric, factors or that could be treated as either.
+Comment on whether the summaries appear to be similar across the test and training data sets.
+
+First, we convert to tibbles, which are slightly more convenient.
+
+```{r}
+College.train <- as.tbl(College.train)
+College.test <- as.tbl(College.test)
+
+College.train$college <- as.factor(College.train$college)
+College.test$college <- as.factor(College.test$college)
+
+levels(College.train$college)<- c(levels(College.train$college), levels(College.test$college))
+levels(College.test$college) <-levels(College.train$college)
+```
+
+The following variables are stored as numeric and as factors (we can assume the test set is the same):
+
+```{r}
+col_num <- names(College.train)[sapply(College.train,is.numeric)]
+col_cat <- names(College.train)[sapply(College.train,is.factor)]
+
+print(col_num)
+print(col_cat)
+```
+
+
+There are `r dim(College.train)[1]` observations in the training set and `r dim(College.test)[1]` observations in the test set. We can compare the summaries of each set:
+
+```{r}
+summary(College.train)
+summary(College.test)
+```
+
+
+As we might expect, the medians are similar between the traning and test sets. Here's the exact percentage difference in the medians:
+
+```{r}
+train_med=sapply(College.train[col_num],median)
+test_med=sapply(College.test[col_num],median)
+
+df <- data.frame(percent_diff = (test_med - train_med)/train_med, 
+                 variable=names(College.train[col_num]))
+
+ggplot(df, aes(x=factor(variable), y=percent_diff))+
+  geom_bar(stat="identity")+
+  coord_flip()+
+  ylab("Percentage change in median")+
+  xlab("Variable") +
+  ggtitle("Comparison of training and test set median")
+```
+
+However, splitting the data into training and test sets might have significant impacts on the outliers, since outliers can only be in one of the two sets, of course. The percentage differences in the minimums and maximums are much larger, as the next two charts show.
+
+```{r}
+train_min=sapply(College.train[col_num],min)
+test_min=sapply(College.test[col_num],min)
+
+df <- data.frame(percent_diff = (test_min - train_min)/train_min, 
+                 variable=names(College.train[col_num]))
+
+ggplot(df, aes(x=factor(variable), y=percent_diff))+
+  geom_bar(stat="identity")+
+  coord_flip()+
+  ylab("Percentage change in minimum")+
+  xlab("Variable") +
+  ggtitle("Comparison of training and test set miniums")
+```
+
+
+```{r}
+train_max=sapply(College.train[col_num],max)
+test_max=sapply(College.test[col_num],max)
+
+df <- data.frame(percent_diff = (test_max - train_max)/train_max, 
+                 variable=names(College.train[col_num]))
+
+ggplot(df, aes(x=factor(variable), y=percent_diff))+
+  geom_bar(stat="identity")+
+  coord_flip()+
+  ylab("Percentage change in maximum")+
+  xlab("Variable") +
+  ggtitle("Comparison of training and test set maximums")
+```
+
+
+2. Create scatter plots of predictors versus `Apps` using the training data only.  If you use pairs or preferably `ggpairs` make sure that `Apps` is on the y-axis in plots versus the other predictors.  (Make sure that the plots are legible, which may require multiple plots.)  
+Comment on any features in the plots, such as potential outliers, non-linearity, needs for transformations etc.
+
+The factors have too many levels for ggpairs, so we'll look only at the numeric variables. There are `r length(col_num)` numeric variables, we'll break the ggpairs plots into three groups for readability. The bottom row of each shows Apps on the y-axis. This omits the all the interactions between the variables, but our main interest is Apps so that's ok. We show the categorical variables last.
+
+```{r}
+ggpairs(College.train[c(setdiff(col_num,"Apps")[1:5],"Apps")])
+ggpairs(College.train[c(setdiff(col_num,"Apps")[6:10],"Apps")])
+ggpairs(College.train[c(setdiff(col_num,"Apps")[11:14],"Apps")])
+ggpairs(College.train[c("Elite","Private","Apps")])
+```
+
+
+A number of variables have right skew, including Apps, Top10perc, F.Undergrad, P.Undergrad, and Outstate, perc.alumni. PhD and Terminal have strong left skews. We may want to consider a log transformation of these variables. Expend appears to have some outliers.
+
+F.Undergrad has a the highest correlation with Apps (above 0.80), followed by  Top10perc, Top25perc, F.Undergrad, PhD, and Terminal in the approximately 0.35 to 0.45 range. perc.alumni is the only variable with a negative correlation with Apps. 
+
+3.  Build a linear regression model to predict `Apps` from the other predictors (without any transformations).  Present model summaries and diagnostic plots.   Based on diagnostic plots  using residuals,  comment on the  adequacy of your model.
+
+We omit colleges as it's a nominal categorical variable with too many levels for the number of observations we have. In fact, the training set has `r length(unique(College.train$college))` levels in the college variable, which is exactly equal to the number of observations!
+
+```{r}
+mdl1 <- lm(Apps ~ . -college, data=College.train)
+summary(mdl1)
+```
+
+Most of the variables are significant based on their p-values. Only Top10perc, Top25perc, Books, PhD, S.F. ratio are not significant at the 10% level.
+
+```{r}
+par(mfrow=c(2,2))
+plot(mdl1)
+```
+
+The residuals are centered around zero, but we see this "trumpet" shape we discussed in class: For low fitted values the residuals are fairly concentrated, but for large residuals they're vary spread out. This suggests transforming the response variable. There also appear to be a few significant outliers.
+
+The quantile plot shows very fat tails on both sides.
+
+All of the obsevations have a Cook's distance of less than 0.5, however we do see a few obsevations with high leverage.
+
+4. Generate 1000 replicates data sets using the coefficients from the model you fit above.  Using RMSE as a statistic, $\sqrt{\sum_i(y^{\text{rep}} - \hat{y}_i^{\text{rep}})^2/n }$, how does the RMSE from the model based on the training data compare to RMSE's based on the replicated data.  What does this suggest about model adequacy?   Provide a histogram of the RMSE's with a line showing the location of the observed RMSE and compute a p-value.  Hint:  write a function to calculate RMSE.
+
+```{r}
+#code taken from slides on model checking
+nsim = 1000
+n1=nrow(College.train) #what am I supposed to be using to replicate data?
+X = model.matrix(mdl1)
+simdata = sim(mdl1, nsim)  # use GLM to generate beta's
+y.rep = array(NA, c(nsim, n1))
+
+for (i in 1:nsim) {
+  y.rep[i,] = X %*% simdata@coef[i,]
+}
+#rmse function
+rmse = function(y, ypred) {
+  rmse = sqrt(mean((y - ypred)^2))
+  return(rmse)
+}
+true.rmse = rmse(College.train$Apps,mdl1$fitted.values)
+RMSE_Obs[1] = true.rmse
+rmses = apply(y.rep, 1, function(x){rmse(College.train$Apps,x)})
+rmsetest1 = predict(mdl1,newdata = College.test)
+RMSE_Test[1] = rmse(College.test$Apps,rmsetest1)
+
+ggplot(data.frame(rmses), aes(x = rmses)) + geom_histogram() +
+ geom_vline(xintercept = true.rmse, col=2)
+
+#p-value?
+t.test(rmses,mu=true.rmse)
+pvalue[1] = t.test(rmses,mu=true.rmse)$p.value
+
+```
+
+This model is inadequate, since the RMSE for the simulated data are much higher than that of the training data. The p-value is very low, indicating that the true mean for the RMSE's is not the same as the training data RMSE. This shows that the model was overfitting the data.
+
+5. Build a second model, considering transformations of the response and predictors, possible interactions, etc with the goal of trying to achieve  a model where assumptions for linear regression are satisfied, providing justification for your choices.
+Comment on  how well the assumptions are met and and issues that diagnostic plots may reveal.
+
+First, let's look at the boxcox of our first model:
+
+```{r}
+boxcox(mdl1)
+```
+
+Although the 95% confidence interval for $\lambda$ is outside of zero, we'll use use zero anyway for our transformation on Apps for similicity. That is, we'll take the log transformation of Apps.
+
+To suggest interaction terms, we'll try fitting a model with all of them and look at the most significant ones.
+
+```{r}
+mdl_test <- lm(log(Apps) ~ (. -college)*(. -college), data=College.train)
+summary(mdl_test)
+```
+
+
+A number of the interation terms are significant, so we'll focus on the ones significant at the 1% level.
+
+Now, in question 2 we identified a number of covariates with skew. We will take the log transformation to try to mitigate the impact of this. 
+
+Finally, in our first regression, we identified a number of covariates that we're not significant. We'll try throwing these out.
+
+```{r}
+mdl2 <- lm(log(Apps) ~ 
+             log(P.Undergrad) +
+             log(Outstate) +
+             log(Terminal) +
+             Private*log(F.Undergrad) +
+             Private*Top25perc +
+             Private*log(Top10perc) +
+             Top25perc*log(F.Undergrad) +
+             log(F.Undergrad)*S.F.Ratio +
+             log(F.Undergrad)*Expend +
+             Books*Personal +
+             S.F.Ratio*perc.alumni +
+             Room.Board+
+             PhD+
+             Grad.Rate+
+             Elite, 
+           data=College.train)
+
+par(mfrow=c(2,2))
+plot(mdl2)
+```
+
+
+So what are the colleges with high residuals and high leverage? Here are the top 5:
+
+```{r}
+# High residuals
+resid = mdl2$residuals
+out_resid <- College.train %>%
+  dplyr::select(college) %>%
+  mutate(Index=rownames(College.train), Residual=round(abs(resid),3)) %>%
+  arrange(desc(Residual)) %>%
+  slice(1:5)
+kable(out_resid)
+
+# High leverage
+lev = hat(model.matrix(mdl2))
+out_lev <- College.train %>%
+  dplyr::select(college) %>%
+  mutate(Index=rownames(College.train), Leverage=round(lev,3)) %>%
+  arrange(desc(Leverage)) %>%
+  slice(1:5)
+kable(out_lev)
+```
+```{r}
+summary(mdl2)
+```
+
+
+
+6.  Repeat problem 4, but using your model from problem 5.  If you transform the response, you will need to back transform  data to the original units in order to compute the RMSE in the original units.  Does this suggest that the model is adequate?  Do the two graphs provide information about which model is better?
+
+```{r}
+X1 = model.matrix(mdl2)
+simdata1 = sim(mdl2, nsim)  # use GLM to generate beta's
+y.rep1 = array(NA, c(nsim, n1))
+
+for (i in 1:nsim) {
+  y.rep1[i,] = X1 %*% simdata1@coef[i,]
+}
+
+true.rmse1 = rmse(College.train$Apps,exp(mdl2$fitted.values))
+RMSE_Obs[2] = true.rmse1
+rmses1 = apply(y.rep1, 1, function(x){rmse(College.train$Apps,exp(x))})
+
+rmsetest2 = exp(predict(mdl2,newdata = College.test))
+RMSE_Test[2] = rmse(College.test$Apps,rmsetest2)
+
+ggplot(data.frame(rmses1), aes(x = rmses1)) + geom_histogram() +
+ geom_vline(xintercept = true.rmse1, col=2)
+
+#p-value?
+t.test(rmses1,mu=true.rmse1)
+pvalue[2] = t.test(rmses1,mu=true.rmse1)$p.value
+
+
+```
+The graphs show that this model is a much better fit. The RMSE for the simulated data is consistent with the RMSE for the training set, which means that this model is fairly robust. The p-value, however, shows that we should reject the null hypothesis that the mean of the RMSE's is equal to the training RMSE.
+
+
+7. Use your two fitted models to predict the number of applications for the testing data, `College.test`.  Plot the predicted residuals $y_i - \hat{y}_i$  versus the predictions.  Are there any cases where the model does a poor job of predicting?  Compute the RMSE using the test data
+where now RMSE = $\sqrt{\sum_{i = 1}^{n.test}(y_i - \hat{y}_i)^2/n.test}$ where the sum is over the test data.  Which model is better for the out of sample prediction?
+
+```{r}
+y.pred1 =predict(mdl1, College.test)
+y.pred2 = exp(predict(mdl2, College.test))
+
+df1 <- data.frame(y.pred1, residuals = College.test$Apps -y.pred1)
+df2 <- data.frame(y.pred2, residuals = College.test$Apps -y.pred2)
+
+par(mfrow=c(1,2))
+
+#df2 = subset(df2, y.pred2<max(y.pred2))
+
+ggplot(df1, aes(x=y.pred1, y=residuals))+
+  geom_point()+
+  ylab("Residuals")+
+  xlab("Fitted values")+
+  ggtitle("Model 1")
+
+ggplot(df2, aes(x=y.pred2, y=residuals))+
+  geom_point()+
+  ylab("Residuals")+
+  xlab("Fitted values")+
+    ggtitle("Model 2")
+```
+The residuals for both models become increasingly large as fitted values increase. However, it looks like the first model has less dramatic residuals for these values. Most of the values look like they are around zero, but there is a pattern to the residuals. It is hard to tell whether or not the residuals in the second model are random because of the scale. We can look at log plots to account for this:
+
+
+
+```{r}
+
+ggplot(df1, aes(x=log(y.pred1), y=residuals))+
+  geom_point()+
+  ylab("Residuals")+
+  xlab("log(Fitted values)")+
+  ggtitle("Model 1")
+
+ggplot(df2, aes(x=log(y.pred2), y=residuals))+
+  geom_point()+
+  ylab("Residuals")+
+  xlab("log(Fitted values)")+
+    ggtitle("Model 2")
+
+College.test$college[which.max(abs(df1$residuals))]
+College.test$college[which.max(abs(df2$residuals))]
+
+
+```
+
+Both models seem to have small and well-behaved residuals for small fitted values. However, the larger values in both models have very large residuals, indicating that the model is doing a very poor job of predicting. The point with the worst residual for model 1 and model2 are both Eastern Connecticut State University.
+
+
+```{r}
+test.rmse1 = rmse(College.test$Apps, y.pred1)
+test.rmse2 = rmse(College.test$Apps, y.pred2)
+```
+
+The RMSE is lower in model 2, which means this is the better model for predicting out of sample observations, but both models predict large values poorly.
+
+
+8. Add the test RMSE's from the two models to the respective  histograms from 4 and 6.   Are these values surprising relative to the RMSEs from the replicated data?  Explain.  What do you think this implies for model adequacy checks?  How accurately can we predict college applications?
+
+```{r}
+ggplot(data.frame(rmses), aes(x = rmses)) + geom_histogram() +
+ geom_vline(xintercept = true.rmse, col=2)+
+  geom_vline(xintercept = test.rmse1, col=3)
+
+ggplot(data.frame(rmses1), aes(x = rmses)) + geom_histogram() +
+ geom_vline(xintercept = true.rmse1, col=2)+
+  geom_vline(xintercept = test.rmse2, col=3)
+```
+
+
+9.  As the number of applications is a count variable, a Poisson regression model is a natural alternative for modelling this data.   Build a Poisson model using only main effects as in problem 4.   Comment on the model adequacy based on diagnostic plots and other summaries.  Is there evidence that there is lack of fit?
+
+```{r}
+mdl_pos <- glm(Apps ~ . -college, data=College.train, family=poisson)
+summary(mdl_pos)
+
+```
+
+
+Most of the variables are significant, but the small coefficient estimates indicate that most of these are almost 0. 
+
+```{r}
+par(mfrow=c(2,2))
+plot(mdl_pos)
+```
+
+The residuals seem to have an underlying trend, indicating that the model is not a very good fit. Since this is a Poisson model, we should expect to see variance increasing for greated predicted values. The Q-Q plot shows that there are (very) heavy tails present, which indicate transformations might be helpful. The standarized Pearson residuals vs. Leverage plot show there are several points which have a large Cook's distance. However, this might be due to the large range of values for the response.
+
+```{r}
+#overdispersion
+summary(mdl_pos)$deviance/summary(mdl_pos)$df.residual
+
+#p-val under chi sq
+1 - pchisq(summary(mdl_pos)$deviance, summary(mdl_pos)$df.residual)
+
+```
+The overdispersion estimate is (much) larger than 1, which means there is a lot of overdispersion. The probability of observing the residual deviance is extremely unlikely, which means that the model is not a good fit.
+
+10.  Generate 1000 replicates data sets using the coefficients from the Poisson model you fit above.  Using RMSE as a statistic, $\sqrt{\sum_i(y^{\text{rep}} - \hat{y}_i^{\text{rep}})^2/n }$, how does the RMSE from the model based on the training data compare to RMSE's based on the replicated data.  What does this suggest about model adequacy?   Provide a histogram of the RMSE's with a line showing the location of the observed RMSE and compute a p-value.  
+
+```{r}
+#code taken from slides on model checking
+X.p = model.matrix(mdl_pos)
+simdata.p = sim(mdl_pos, nsim)  # use GLM to generate beta's
+y.rep.p = array(NA, c(nsim, n1))
+
+for (i in 1:nsim) {
+  y.rep.p[i,] = exp(X.p %*% simdata.p@coef[i,])
+}
+true.rmse.p = rmse(College.train$Apps,mdl_pos$fitted.values)
+RMSE_Obs[3] = true.rmse.p
+rmsetest3 = exp(predict(mdl_pos,newdata = College.test))
+RMSE_Test[3] = rmse(College.test$Apps,(rmsetest3))
+
+rmses.p = apply(y.rep.p, 1, function(x){rmse(College.train$Apps,(x))})
+
+ggplot(data.frame(rmses.p), aes(x = rmses.p)) + geom_histogram() +
+ geom_vline(xintercept = true.rmse.p, col=2)
+
+#p-value?
+t.test(rmses.p,mu=true.rmse.p)
+pvalue[3] = t.test(rmses.p,mu=true.rmse.p)$p.value
+```
+This shows the model does ok with the simulated data. The p-value is under the .05 threshold, so it is possible for the mean of the simulated data's RMSE's to be equal to the RMSE of the training data. However, this p-value is still higher than that of previous models.
+
+11.  Using the test data set, calculate the RMSE for the test data using the predictions from the Poisson model.  How does this compare to the RMSE based on the observed data?  Add this RMSE to your plot above.
+
+```{r}
+y.pred.p = exp(predict(mdl_pos, College.test))
+test.rmse.p = rmse(College.test$Apps, y.pred.p)
+
+test.rmse.p/true.rmse.p
+ggplot(data.frame(rmses.p), aes(x = rmses.p)) + geom_histogram() +
+ geom_vline(xintercept = true.rmse.p, col=2)+
+  geom_vline(xintercept = test.rmse.p, col=3)
+```
+The RMSE for the test data is 1.5 times larger than that of the training data. This shows that the Poisson model (with linear predictors and response) cannot predict new data, which is obvious when looking at the plot of RMSE's: the test data RMSE is even larger than the simulated data's.
+
+12.  As in problem 6,  consider transformations of the predictors and interactions to improve your model justifying your choices.  Provide a summary of the model and comment on diagnostics and summaries for model fit.   Is there evidence of overdispersion?  Explain.
+
+According to the ggpairs plot we did in question 2, I removed several low correlated variable, such as `Room.Board`, `Books` and `S.F.Ratio`, and log transformed several variables, such as `Top10perc`, `F.Undergrad`, `P.Undergrad`, `Personal` and `Expend`. 
+
+```{r}
+mdl3 <- glm(Apps ~ 
+             log(P.Undergrad+1) +
+             log(Terminal+1) +
+             Private*log(F.Undergrad+1) +
+             Private*Top25perc +
+             Private*log(Top10perc+1) +
+             log(Personal+1)+
+             log(Expend+1)+ 
+             PhD+
+             Elite+
+             Outstate+
+             Room.Board+
+             Grad.Rate, 
+           data=College.train, family = poisson)
+summary(mdl3)
+```
+```{r}
+par(mfrow=c(2,2))
+plot(mdl3)
+```
+In the residual plot, the residuas for poisson regression increase as predicted values increase, indicating that the model is kind of a good fit. However, a good fit poisson model's the standard residuals should have mean zero and standard variance 1. In this scale-location plot, the values of standard residuals still show a linear increasing pattern with predicted values, which do not have mean zero. The Q-Q plot shows that there are still heavy tails present, though it is better than the model we fit in question 9. The standarized Pearson residuals vs. Leverage plot show there are several points which have a large Cook's distance. 
+
+```{r}
+summary(mdl3)$deviance/summary(mdl3)$df.residual
+1 - pchisq(summary(mdl3)$deviance, summary(mdl3)$df.residual)
+```
+
+The estimated overdispersion is still too large and Chi-square p-value equals 1, indicating the model is overdispersion.
+
+13. Carry out the predictive check using simulated data from the Poisson model.   Add the RMSE for the observed data to the plot and the RMSE for prediction on the test data.  Does this suggest that the model is OK?
+
+```{r}
+X3 = model.matrix(mdl3)
+simdata3 = sim(mdl3, nsim)
+y.rep3 = array(NA, c(nsim, n1))
+
+for (i in 1:nsim) {
+  y.rep3[i,] = exp(X3 %*% simdata3@coef[i,])
+}
+true.rmse3 = rmse(College.train$Apps,mdl3$fitted.values)
+rmses3 = apply(y.rep3, 1, function(x){rmse(College.train$Apps,(x))})
+
+RMSE_Obs[4] = true.rmse3
+rmsetest4 = predict(mdl3,newdata = College.test)
+RMSE_Test[4] = rmse(College.test$Apps,exp(rmsetest4))
+
+
+ggplot(data.frame(rmses3), aes(x = rmses3)) + geom_histogram() +
+ geom_vline(xintercept = true.rmse3, col=2)
+
+
+t.test(rmses3,mu=true.rmse3)
+pvalue[4] = t.test(rmses3,mu=true.rmse3)$p.value
+```
+
+Although the RMSE for the train dataset decreases, the RMSE for simulated data and test data are still large, which means the model is still not a good fit.
+
+14. Build a model using the negative binomial model (consider transformations and interactions if needed) and examine diagnostic plots.  Are there any suggestions of problems with this model?
+
+```{r}
+mdl4 <- glm.nb(Apps ~ 
+             log(P.Undergrad+1) +
+             log(Terminal+1) +
+             Private*log(F.Undergrad+1) +
+             Private*Top25perc +
+             Private*log(Top10perc+1) +
+             log(Personal+1)+
+             log(Expend+1)+ 
+             PhD+
+             Elite+
+             Outstate+
+             Room.Board+
+             Grad.Rate, 
+           data=College.train)
+summary(mdl4)
+```
+```{r}
+par(mfrow=c(2,2))
+plot(mdl4)
+```
+
+According to the above residual plots, the negative binomial model does a better fit than poisson model. However, the scale-location plot still shows the standardized residuals do not have a mean zero but the variance seems to be constant. From the Q-Q plot and leverage plot, three outliers with high cook's distance(`211`, `295`, `579`) may cause lower fitness of this model. 
+
+Since the model may be sensitive to the influential points, try a same model with the dataset removing the point `579` with highest cook's distance. According to this step, we can find out why the fitness of this model on test dataset is much lower. From the summary of the new model, we can find that the coefficients on multiple variables have changed, indicating the influential point has a significant effect on fitting this negative binomial model.
+
+```{r}
+cook = cooks.distance(mdl4)
+mdl41 <- glm.nb(Apps ~ 
+             log(P.Undergrad+1) +
+             log(Terminal+1) +
+             Private*log(F.Undergrad+1) +
+             Private*Top25perc +
+             Private*log(Top10perc+1) +
+             log(Personal+1)+
+             log(Expend+1)+ 
+             PhD+
+             Elite+
+             Outstate+
+             Room.Board+
+             Grad.Rate, 
+           data=College.train, subset = (cook < max(cook)))
+summary(mdl41)
+par(mfrow=c(2,2))
+plot(mdl41)
+```
+
+
+15. Carry out the predictive checks using simulated replicates with RMSE and add RMSE from the test data and observed data to your plot.  What do these suggest about 1) model adequacy and 2) model comparison?  Which model out of all that you have fit do you recommend?  
+
+```{r}
+X4 = model.matrix(mdl4)
+
+#simulate for negative binomial
+require(mvtnorm)
+beta4 = rmvnorm(nsim, coef(mdl4), vcov(mdl4))
+theta4 = rnorm(nsim, mdl4$theta, mdl4$SE.theta)
+y.rep4 = array(NA, c(nsim, n1))
+
+for (i in 1:nsim) {
+  mu = exp(X4 %*% beta4[i,])
+  y.rep4[i,] = rnegbin(n1,mu=mu, theta = theta4[i])
+}
+
+true.rmse4 = rmse(College.train$Apps,mdl4$fitted.values)
+RMSE_Obs[5] = true.rmse4
+rmses4 = apply(y.rep4, 1, function(x){rmse(College.train$Apps,x)})
+y.pred5 = predict(mdl4, College.test)
+test.rmse5 = rmse(College.test$Apps, exp(y.pred5))
+RMSE_Test[5] = test.rmse5
+
+
+ggplot(data.frame(rmses4), aes(x = rmses4)) + geom_histogram() +
+ geom_vline(xintercept = true.rmse4, col=2)+
+  geom_vline(xintercept = test.rmse5, col=3)
+
+
+t.test(rmses4,mu=true.rmse4)
+pvalue[5] = t.test(rmses4,mu=true.rmse4)$p.value
+
+```
+According to RMSE histogram, the RMSE of train dataset is much lower than that of the simulated dataset, which means there was probably some overfitting. The test RMSE is within the range of the simulated set RMSE's, suggesting that the model can predict new data almost as well as simulated data. 
+
+I try the same procedure to plot RMSE histogram for the model fitted from train data removing one of the influential point. In such a plot, the RMSE for train dataset and simulated dataset dramatically increase but the RMSE for test dataset remains same, which shows the model fitted by the train dataset without influential point is not a good fit for both train and test datasets. Thus, we can believe that the low fitness of negative binomial model on test dataset is not due to influential points in train dataset.  
+
+Then, I consider the fitting problem may derive from the significant difference between train and test dataset. I plot them to see if my guess is correct.   
+
+```{r}
+qplot(y=Apps,data=College.train)
+qplot(y=Apps,data=College.test)
+```
+
+From the above two plots, we can find out the low fittness problem of negative binomial model on test data is probably due to the diversity of train and test dataset. As far, I think the negative binomial model with transformation and interaction terms (`mdl4`) is the model I recommend. 
+
+16.  While RMSE is a popular summary for model goodness of fit, coverage of confidence intervals is an alternative.
+For each case in the test set, find a 95% prediction interval.  Now evaluate if the responses in the test data are inside or outside of the intervals.   If we have the correct coverage, we would expect that at least 95\% of the intervals would contain the test cases.
+Write a function to calculate coverage (the input should be the fitted model object and the test data-frame) and then evaluate coverage for each of the 5 models that you fit  (the two normal, the two Poisson and the negative binomial) including plots of the confidence intervals versus ordered by the prediction, with the left out data added as points.  Comment on the plots, highlighting any unusual colleges where the model predicts poorly.
+
+```{r}
+pi.norm = function(object, newdata, level = 0.95 , nsim = 10000){
+  n = nrow(newdata)
+  X = model.matrix(object, data = newdata)
+  simdata = sim(object, nsim)
+  y.rep = matrix(NA,nsim,n)
+  
+  for(i in 1:nsim){
+    y.rep[i,] = X %*% simdata@coef[i,]
+  }
+  pi = t(apply(y.rep,2,function(x) {quantile(x,c((1-level)/2,0.5+level/2))}))
+  return(pi)
+}
+
+
+pi.poi = function(object, newdata, level = 0.95 , nsim = 10000){
+  n = nrow(newdata)
+  X = model.matrix(object, data = newdata)
+  simdata = sim(object, nsim)
+  y.rep = matrix(NA,nsim,n)
+  
+  for(i in 1:nsim){
+    y.rep[i,] = exp(X %*% simdata@coef[i,])
+  }
+  pi = t(apply(y.rep,2,function(x) {quantile(x,c((1-level)/2,0.5+level/2))}))
+  return(pi)
+}
+
+
+pi.nb = function(object, newdata, level = 0.95 , nsim = 10000){
+  require(mvtnorm)
+  n = nrow(newdata)
+  X = model.matrix(object, data = newdata)
+  beta = rmvnorm(nsim, coef(object),vcov(object))
+  theta = rnorm(nsim,object$theta,object$SE.theta)
+  y.rep = matrix(NA,nsim,n)
+  
+  for(i in 1:nsim){
+    mu = exp(X %*% beta[i,])
+    y.rep[i,] = rnegbin(n, mu = mu, theta = theta[i])
+  }
+  pi = t(apply(y.rep,2,function(x) {quantile(x,c((1-level)/2,0.5+level/2))}))
+  return(pi)
+}
+
+coverage = function(y, pi){
+  mean(y >= pi[,1] & y <= pi[,2])
+}
+
+
+pi.norm1 = pi.norm(mdl1,College.test)
+coveragedata[1] = coverage(College.test$Apps,pi.norm1)
+df.norm1 = data.frame(testdata = College.test$Apps, 
+                      pred = predict(mdl1,College.test,type = "response"),
+                      lwr = pi.norm1[,1], upr = pi.norm1[,2])
+df.norm1 = df.norm1 %>% arrange(pred)
+ggplot(df.norm1, aes(x=pred, y = testdata))+
+  geom_ribbon(aes(ymin = lwr, ymax = upr), fill = "blue",alpha = 0.2)+
+  geom_point(aes(y = testdata))+
+  xlab("Predicted Number of Applications Received") +
+  ylab("Number of Applications Received")+
+  ggtitle("95% Prediction Intervals under Linear Regression Model1")
+
+
+pi.norm2 = pi.norm(mdl2,College.test)
+coveragedata[2] = coverage(College.test$Apps,exp(pi.norm2))
+df.norm2 = data.frame(testdata = College.test$Apps, 
+                      pred = predict(mdl2,College.test,type = "response"),
+                      lwr = exp(pi.norm2[,1]), upr = exp(pi.norm2[,2]))
+df.norm2 = df.norm2 %>% arrange(pred)
+ggplot(df.norm2, aes(x=pred, y = testdata))+
+  geom_ribbon(aes(ymin = lwr, ymax = upr), fill = "blue",alpha = 0.2)+
+  geom_point(aes(y = testdata))+
+  xlab("Predicted Number of Applications Received") +
+  ylab("Number of Applications Received")+
+  ggtitle("95% Prediction Intervals under Linear Regression Model2")
+
+
+pi.poi1 = pi.poi(mdl_pos,College.test)
+coveragedata[3] = coverage(College.test$Apps,pi.poi1)
+df.poi1 = data.frame(testdata = College.test$Apps, 
+                      pred = predict(mdl_pos,College.test,type = "response"),
+                      lwr = pi.poi1[,1], upr = pi.poi1[,2])
+df.poi1 = df.poi1 %>% arrange(pred)
+ggplot(df.poi1, aes(x=pred, y = testdata))+
+  geom_ribbon(aes(ymin = lwr, ymax = upr), fill = "blue",alpha = 0.2)+
+  geom_point(aes(y = testdata))+
+  xlab("Predicted Number of Applications Received") +
+  ylab("Number of Applications Received")+
+  ggtitle("95% Prediction Intervals under Poisson Regression Model1")
+
+
+pi.poi2 = pi.poi(mdl3,College.test)
+coveragedata[4] = coverage(College.test$Apps,pi.poi2)
+df.poi2 = data.frame(testdata = College.test$Apps, 
+                      pred = predict(mdl3,College.test,type = "response"),
+                      lwr = pi.poi2[,1], upr = pi.poi2[,2])
+df.poi2 = df.poi2 %>% arrange(pred)
+ggplot(df.poi2, aes(x=pred, y = testdata))+
+  geom_ribbon(aes(ymin = lwr, ymax = upr), fill = "blue",alpha = 0.2)+
+  geom_point(aes(y = testdata))+
+  xlab("Predicted Number of Applications Received") +
+  ylab("Number of Applications Received")+
+  ggtitle("95% Prediction Intervals under Poisson Regression Model2")
+
+pi.nb = pi.nb(mdl4,College.test)
+coveragedata[5] = coverage(College.test$Apps,pi.nb)
+df.nb = data.frame(testdata = College.test$Apps, 
+                      pred = predict(mdl4,College.test,type = "response"),
+                      lwr = pi.nb[,1], upr = pi.nb[,2])
+df.nb = df.nb %>% arrange(pred)
+ggplot(df.nb, aes(x=pred, y = testdata))+
+  geom_ribbon(aes(ymin = lwr, ymax = upr), fill = "blue",alpha = 0.2)+
+  geom_point(aes(y = testdata))+
+  xlab("Predicted Number of Applications Received") +
+  ylab("Number of Applications Received")+
+  ggtitle("95% Prediction Intervals under Negative Binomial Regression Model")
+
+df.snb = df.nb %>% filter(testdata > upr | testdata < lwr)
+Clist = df.snb$testdata
+
+
+C = College.test %>% filter(Apps %in% Clist)
+C$college
+
+```
+
+Comment:
+1. Based on the coverage rates, negative binomial model is the best one among those five models.However, even for the negative binomial model, only 94.3% of the intervals contain the test cases.For the linear regression models, nearly 30% of the intervals contain the test cases. For the Poisson regression models, almost none of the intervals contain the test cases.
+2. Based on the coverage plots, there are significant overdispersion problems in the normal and poisson regression models.
+3. Based on the negative binomial model, the following 11 colleges get poor prediction: Arkansas College (Lyon College), Bellarmine College, Birmingham-Southern College, Bluffton College,  Campbell University, Chapman University, Clemson University, College of Mount St. Joseph Cumberland College, Eastern Connecticut State University, Harvey Mudd College.
+
+
+ 
+17.  Provide a table  with 
+the 1) RMSE's on the observed data, 2) RMSE's on the test data, 3) coverage, 4) the predictive check p-value with one row for each of the 5 models and comment the results.  Which model do you think is best and why?
+
+```{r}
+df_table = cbind(RMSE_Obs,RMSE_Test)
+df_table = cbind(df_table,coveragedata)
+df_table = cbind(df_table,pvalue)
+rownames(df_table) <- c("Normal Distribution Model 1","Normal Distribution Model 2","Poisson Distribution Model 1","Poisson Distribution Model 2","Negative Binomial Distribution Model")
+kable(round(df_table,4))
+```
+
+Comment:
+1. Based on the pvalue, we can conclude that Poisson model is not well fitted for this data. 
+2. Based on the RMSE on observed data and RMSE on tested data, negative binomial distribution model is slightly better than the normal distribution models. 
+3. Based on the coverage rate data, negative binomial distribution is much better than the other 4 models.
+Therefore, negative binomial distribution is the best model. 
+
+
+
+
+18.  For your "best" model  provide a nicely formatted table (use `kable()` or `xtable()`) of relative risks and 95% confidence intervals.  Pick 5 of the most important variables and provide a paragraph that provides an interpretation of the parameters (and intervals) that can be provided to a university admissions officer about which variables increase admissions.  
+
+```{r, results='asis'}
+class(mdl4) = c("glm.nb", "glm", "lm")
+ci = exp(cbind(coef(mdl4),confint(mdl4)))
+colnames(ci) = c("RR", "2.5", "97.5")
+kable(round(ci,4))
+summary(mdl4)
+```
+
+Comment:
+Five most important variables: log(P.Undergrad + 1), log(F.Undergrad + 1), Top25perc, 
+log(Top10perc + 1), EliteYes
+
+
+The following three variables can increase the admissions: number of full-time undergraduates,  proportion of new students from top 25% of high school class and whether the proportion of students coming from the top 10% of their high school classes exceeds 50 %. Numbe of part-time undergraduares and proportion of new students from top 10% of high school class will decrease the admissions
+
+
+
+### Some Theory   
+
+19.   We have said that the residual deviance has a $\chi^2$ distribution with $n - p - 1$  degrees of freedom (n - the number of parameters) if the model is correct.   What is the mean and standard deviation of the residual deviance?    Use the Empirical Rule to suggest an easy to use cut-off for suggesting overdispersion that you can calculate without a calculator.
+
+A $\chi^2$ distribution with $n - p - 1$  degrees of freedom has mean $n - p - 1$ and standard deviation $\sqrt{2(n - p - 1)}$.
+
+Empirical Rule: Residual Deviance/Degrees of freedom >1 implies overdispersion problem.
+
+20.  Gamma mixtures of Poissons:  From class we said that
+\begin{align}
+Y \mid \lambda & \sim P(\lambda) \\
+p(y \mid \lambda) & = \frac{\lambda^y e^{-\lambda}} {y!} \\
+& \\
+\lambda \mid \mu, \theta & \sim G(\theta, \theta/\mu)  \\
+p(\lambda \mid  \mu, \theta) & = \frac{(\theta/ \mu)^\theta}{\Gamma(\theta)} \lambda^{\theta - 1} e^{- \lambda \theta/\mu} \\
+& \\
+p(Y \mid \mu, \theta) & = \int p(Y \mid \lambda) p(\lambda \mid \theta, \theta/\mu) d \lambda \\
+ & =   \frac{ \Gamma(y + \theta)}{y! \Gamma(\theta)}
+\left(\frac{\theta}{\theta + \mu}\right)^{\theta}
+\left(\frac{\mu}{\theta + \mu}\right)^{y} \\
+Y \mid \mu, \theta & \sim NB(\mu, \theta) 
+\end{align}
+Derive the density of $Y \mid \mu, \theta$ in (8) showing your work using LaTeX expressions.  (Note this may not display if the output format is html, so please use pdf.)
+Using iterated expectations with the Gamma-Poisson mixture, find the mean and variance of $Y$, showing your work.
+
+\begin{align*}
+p(Y \mid \mu, \theta) 
+&= \int p(Y \mid \lambda) p(\lambda \mid \theta, \theta/\mu) d \lambda 
+\\
+&=\int\frac{\lambda^y e^{-\lambda}}{y!}\frac{(\theta/\mu)^\theta}{\Gamma(\theta)} \lambda^{\theta-1}e^{-\lambda\theta/\mu}d\lambda
+\\
+&=\frac{(\theta/\mu)^\theta}{y! \Gamma(\theta)}\int\lambda^{y+\theta-1}e^{-(\theta/\mu+1)\lambda}d\lambda
+\end{align*}
+
+To evaluate this integral we can use the fact that the gamma distribution must integrate to 1 for any $a,b>0$:
+
+\begin{align*}
+1&=\int\frac{b^a}{\Gamma(a)}x^{a-1}e^{-bx}dx
+\\
+\frac{\Gamma(a)}{b^a} &= \int x^{a-1}e^{-bx}dx
+\end{align*}
+
+So, using this formula to evaluate the integral above we have:
+
+\begin{align*}
+p(Y \mid \mu, \theta) 
+&=\frac{(\theta/\mu)^\theta}{y!\Gamma(\theta)}\int\lambda^{y+\theta-1}e^{-(\theta/\mu+1)\lambda}d\lambda
+\\
+&= \frac{(\theta/\mu)^\theta}{y!\Gamma(\theta)} \frac{\Gamma(y+\theta)}{(\theta/\mu+1)^{y+\theta}}
+\\
+&= \frac{\Gamma(y+\theta)}{y!\Gamma(\theta)} \left( \frac{\theta}{\mu} \right)^\theta \left ( \frac{\theta+\mu}{\mu} \right)^{-(y+\theta)}
+\\
+&= \frac{\Gamma(y+\theta)}{y!\Gamma(\theta)} \left( \frac{\theta}{\mu} \right)^\theta \left ( \frac{\mu}{\theta+\mu} \right)^{y+\theta}
+\\
+&= \frac{\Gamma(y+\theta)}{y!\Gamma(\theta)}  \frac{\theta^\theta}{\mu^\theta} \left ( \frac{\mu}{\theta+\mu} \right)^{\theta} \left ( \frac{\mu}{\theta+\mu} \right)^{y}
+\\
+&=\frac{ \Gamma(y + \theta)}{y! \Gamma(\theta)}
+\left(\frac{\theta}{\theta + \mu}\right)^{\theta}
+\left(\frac{\mu}{\theta + \mu}\right)^{y}
+\end{align*}
+
+So, we have $Y \mid \mu, \theta \sim NB(\mu, \theta)$ as desired.
+
+
+
+
+
