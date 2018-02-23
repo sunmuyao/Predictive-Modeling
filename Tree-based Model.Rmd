@@ -1,0 +1,328 @@
+---
+title: "Tree-based Model"
+author: "Muyao Sun"
+date: "April 14, 2017"
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tree)
+library(randomForest)
+# add other libraries
+library(arm)
+library(foreign)
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(gdata)
+suppressMessages(library(gbm))
+#suppressMessages(library(bartMachine))
+```
+
+
+We will return to binary regression with the National Election Study data from Gelman & Hill (GH).  (See Chapter 4.7 for descriptions of some of the variables and HW3 for initial model fitting). 
+
+
+```{r data, echo=FALSE}
+# Data are at http://www.stat.columbia.edu/~gelman/arm/examples/nes
+
+nes <- read.dta("nes5200_processed_voters_realideo.dta",
+                   convert.factors=F)
+#  Clean data 
+
+# filter data to include year, age, income, race, white, black, female,
+# religion, south, state, region, maritial_status, party afilliation
+# (as in HW3) ideology (as in HW3).   
+# The response should be 0/1  with 1 = vote republican in the 
+# presidential election.
+
+data = nes %>%
+  filter(!is.na(presvote)) %>% 
+  filter(!is.na(black)) %>%
+  filter(!is.na(female)) %>%
+  filter(!is.na(age)) %>%
+  filter(!is.na(state)) %>%
+  filter(!is.na(income))%>%
+  filter(presvote %in% 1:2) %>% 
+  filter(!(state>50)) %>% 
+  mutate(vote = ifelse (presvote==1, 0, ifelse(presvote==2, 1, NA)))
+
+data = select(data, vote, year, age, income, race, 
+              #white, black, female, --don't really need these
+              religion, south, state, region, martial_status, partyid3, ideo,gender)
+
+#income, gender, race, educ1, partyid3, ideo, region, religion)
+
+#  remove NA's 
+
+# convert variables that are coded as numerical as
+# factors (state, region, etc) 
+data$gender <- factor(data$gender, 
+                               levels=1:2,
+                               labels=c("male", "female"))
+
+data$race <- factor(data$race, 
+                               levels=c(1,2,3,4,5,7),
+                               labels=c("white","black","asian",
+                                        "native american","hispanic","other"))
+
+data$ideo <- factor(data$ideo, 
+                               levels=c(1,3,5),
+                               labels=c("liberal","moderate","conservative") )
+
+
+
+data$partyid3 <- factor(data$partyid3, 
+                               levels=c(1, 2, 3, 9),
+                               labels=c("democrats","independents","republicans","apolitical"))
+data$religion <- factor(data$religion, 
+                               levels=c(1, 2, 3, 4),
+                               labels=c("1","2","3","4"))
+data$south <- factor(data$south)
+data$state <- factor(data$state)
+data$region <- factor(data$region)
+data$martial_status <- factor(data$martial_status)
+data$vote <- factor(data$vote)
+
+#remove NA's from data
+data<- na.omit(data)
+# create random split 50% sample for test and training
+set.seed(42)
+n = nrow(data)
+n.train = floor(.5*n)
+train = sample(1:n, size=n.train, replace=FALSE)
+
+data.train= data[train,]
+data.test= data[-train,]
+# Note the variable state has more than 50 levels, and I 
+# have not heard back from authors about a data dictionary.  
+# You may decide how to handle this; ie. assume 1:50 are US and 
+# others are territories other locations and use the 1:50 ???  
+# just document what you do.  (they are not sorted alphabetical)   
+# Discuss how this limits your modelling
+```
+
+
+
+
+
+
+
+
+<!--I had to put the gam code at the top so that it doesn't conflict with bartMachine--> 
+
+```{r, echo=FALSE}
+library(mgcv)
+
+mod <- list()
+mod[[1]] = gam(vote ~ partyid3 + age + ideo + race + year, family=binomial, data=data.train)
+
+mod[[2]] = gam(vote ~ partyid3 + s(state, bs="re") + age + ideo + race + year, family=binomial, data=data.train)
+
+mod[[3]] = gam(vote ~ partyid3 + s(state, bs="re") + s(age, by=race) + ideo + race + year, family=binomial, data=data.train)
+
+mod[[4]] = gam(vote ~ partyid3 + s(state, bs="re") + s(age, by=race) + ideo + race + s(year, k=5), family=binomial, data=data.train)
+```
+
+
+
+
+
+
+
+
+
+
+
+Before we start, note that the "state" variable has more than 50 levels. We will only use the ones from 1 to 50. This causes us to lose over 1000 observations, which may lead to bias in our models.
+
+
+1.  Using the the training data,  fit a tree model to the data to predict probability of voting republican in the election and prune.  Comment on the selected tree - which variables are important? are there interesting interactions or clusters?  (provide graphics or tables to highlight findings)
+
+```{r}
+treemodel=tree(vote~.-state, data = data.train)
+treemodel
+tree.pred = predict(treemodel, data.test, type="class")
+
+#accuracy
+accuracy.tree <- sum(diag(table(tree.pred, data.test$vote)))/nrow(data.test)
+accuracy.tree
+```
+
+The model only has 6 terminal nodes, and uses party affiliation (partyid3), ideology, race, and year. The first split separates republicans and independents from the rest, and then splits the two to give greater probability of voting republican to the republicans. This is expected, since people usually vote for their party's candidate. One interesting interaction is that liberal democrats are much more likely to vote against the conservative after the year 1990  (.990 compared to .852 before 1990). Another interesting result from this tree is that the probability of moderate and conservative black and native american democrats voting against the republican candidate is higher than the probability of a liberal democrat (.952 compared to .941). The accuracy on test data is .873, indicating a pretty good fit.
+
+```{r}
+par(mfrow=c(1,2))
+plot(treemodel)
+text(treemodel)
+#try to prune
+cv = cv.tree(treemodel)
+plot(cv)
+```
+
+The plot further describes the importance of party affiliation: while there are further splits because, the predictions are the same for all on the republican/independent side (voting republican) and also the same on the other side (voting against the republican candidate). The cross-validation plot shows that the tree should not be pruned, since the largest tree has the smallest deviance.
+
+
+2.  Using the the training data,  fit a random forest model to the data to predict probability of voting republican in the election.  Comment on the  results - which variables are important?  what insights does the model provide  (support with graphics if possible)?   
+
+```{r}
+rf =randomForest(vote~., data= data, subset = train) #using default parameters
+varImpPlot(rf)
+
+rf.pred = predict(rf, data.test, type= "class")
+accuracy.rf <- sum(diag(table(rf.pred, data.test$vote)))/nrow(data.test)
+```
+
+The most important variable is party affiliation, as before. Surprisingly, state is the next most important, but region and south are not. This indicates that the state effect is more nuanced than one would expect. Next are ideology, age, and race. Ideology and race both featured in our previous tree, but age did not, showing how a random forest could give different results. The accuracy is .876, which is marginally better than that of one single tree. 
+
+3.  Repeat 3, but using boosting.
+
+```{r fig.height=2, fig.width=4}
+boost=gbm(I(as.numeric(vote)-1)~.,data=data.train,distribution="bernoulli",n.trees=5000, interaction.depth=4)
+yhat.boost=ifelse(predict(boost,newdata=data.test,n.trees=5000,type="response")>.5,1,0)
+tt.boost = table(yhat.boost, data.test$vote)
+
+rep.prob = sum(yhat.boost)/length(yhat.boost)
+rep.prob
+accuracy.boost <- (tt.boost[1,1]+tt.boost[2,2])/length(yhat.boost)
+accuracy.boost
+
+summary(boost)
+```
+
+The predict probability of voting republican in the election is `0.5192`. The accuracy of this boosting tree model is `0.8763`. According to the summary of this boosting model, the most important variable is `partyid3`, followed by `state` and `ideology`. Still it is not surprise to see that party affiliation is the most important variable to predict one's vote in election. Also, as similar to the random forest model, variable `state` is an important variable to predict one's vote, which indicates residents in same state may have similar party line preference.
+
+4.  Repeat 3, but using bart.  Comment on any partial dependence plots or other output that is of interest in explaining the model.
+
+```{r}
+suppressMessages(library(bartMachine))
+```
+
+```{r}
+Bart=bartMachine(X=data.train[,-1],y=data.train$vote,verb=FALSE,serialize=TRUE)
+yhat.bart=predict(Bart,data.test[,-1],type="class")
+tt.bart = table(yhat.bart,data.test$vote)
+
+rep.prob =  (tt.bart[2,1]+tt.bart[2,2])/length(yhat.bart)
+rep.prob
+accuracy.bart <- (tt.bart[1,1]+tt.bart[2,2])/length(yhat.bart)
+accuracy.bart
+
+investigate_var_importance(Bart)
+```
+
+The predict probability of voting republican in the election is `0.5156`. The accuracy of this BART model is `0.8763`. According to the summary of this BART model, the most important variable is `year`, followed by `partyid3_democrats` and `income`. The result in this BART model is really surprising since it has a totally different most important variables comparing to the previous three models. The reason that variable `year` has the highest inclusion proportion may be because it is a continuous variable and more likely included in more models. 
+
+
+5.  Using `gam` or `bam` from `mgcv`  fit a generalized additive model to predict probability of voting republican using smoothing splines for fitting examining nonlinear functions of the continuous variables.  Are there any interactions that you might expect will be important (based on tree models or information from Ch 14 Gelman & Hill?)
+In `mgcv` you may allow different curves for levels of a factor using the `by` option:
+`race + s(age, by=race)`.  Random intercepts for say state, may be obtained via `s(state, bs="re")`.   Using residuals, residual deviance, AIC, or other options find a predictive model that seems to be reasonable for the training data, exploring non-linearity, random intercepts and slopes.   Provide a brief description of how you came up with your final model and describe what insights about voting it provides.
+
+We'll use our previous models to suggest a few possible generalized additive models. Then, we'll select our best model based on the AIC. In the decision tree, we found that `partyid3` was very important (first split). In the random forest model, `partyid3`, `state`, `ideo`, `age`, `race`, and `year` were the most important based on their average reduction in the Gini index. The same variables had high relative importance in the BART model. 
+
+We'll try a few models:
+
+  - __Model 1__ We use the above mentioned variables except state (since later we add it as a random effect) without any random effects or smoothing terms.
+  - __Model 2__ Following Ch 14 Gelman & Hill, we add a random intercept by `state`.
+  - __Model 3__ We add a random slope on the `age` variable, grouped by `race`.
+  - __Model 4__ We to a basis expansion using thin plate regression splines on the `year` variable (we choose year since it's easier to use a numerical variable). To keep the model simple, we limit the dimension of the basis to `k=5`.
+  
+```{r}
+library(mgcv)
+```
+
+
+<!--This is a duplicate of the chunk at the top. It's not evaluated, but shows what was already run at the top--> 
+
+```{r, eval=FALSE}
+mod <- list()
+mod[[1]] = gam(vote ~ partyid3 + age + ideo + race + year, family=binomial, data=data.train)
+
+mod[[2]] = gam(vote ~ partyid3 + s(state, bs="re") + age + ideo + race + year, family=binomial, data=data.train)
+
+mod[[3]] = gam(vote ~ partyid3 + s(state, bs="re") + s(age, by=race) + ideo + race + year, family=binomial, data=data.train)
+
+mod[[4]] = gam(vote ~ partyid3 + s(state, bs="re") + s(age, by=race) + ideo + race + s(year, k=5), family=binomial, data=data.train)
+```
+
+
+```{r}
+best.gam.id <- which.min(sapply(mod, function(m) m$aic))
+print(best.gam.id)
+print(mod[[best.gam.id]]$aic)
+```
+
+So, the model 4 is the based on the AIC. Here's the summary of that model:
+
+```{r}
+summary(mod[[best.gam.id]])
+```
+
+These coefficients generally make sense. For example, the coefficient on `raceblack` is negative, implying african americans are less likely to vote republican, as we would expect. Also, `partyid3republicans` and `ideoconservative` are positive, which of course makes sense. These estimates are directionally in agreement with Ch 14 Gelman & Hill. The individual smoothing terms are mostly not significant, but overall we say they improved the fit (based on the AIC). Ideally, we'd like to look at the random intercept estimates (e.g., to compare the coefficient on Connecticut, as in Ch 14 Gelman & Hill), but we don't have labels on the states (we just have the indices).
+
+To predict on the test data, we have the issue that some levels are included in the test data that are not included in the training data. Since this will cause an error if we try to predict, we take out the necessary observations from the test data. This is less than ideal, but it's only a few observations so we proceed (for example, there's only one observation in our dataset for which political ideology is apolitical).
+
+```{r}
+data.test.clean <- data.test %>%
+  filter(partyid3 != "apolitical") %>%
+  filter(state %in% unique(data.train$state))
+
+yhat.gam <- plogis(predict(mod[[best.gam.id]], newdata=data.test.clean))
+
+accuracy.gam <- sum((ifelse(yhat.gam > 0.5, 1, 0) == data.test.clean$vote))/nrow(data.test.clean)
+
+accuracy.gam
+```
+
+So, the accuracy is fairly good at 88 percent.
+
+6. (optional) Using any insights from the models, fit a model in JAGS that seems to capture the best features of the models above or addresses any deficiencies that you see.
+ 
+7. Using the models from 1-7 (8),  determine the error rate for each model for predicting on the test data.
+
+```{r}
+accuracy.table <- matrix(c(accuracy.tree,accuracy.rf,accuracy.boost,accuracy.bart,accuracy.gam))
+
+rownames(accuracy.table) <- c("Tree","RF","Boosting","BART","GAM")
+colnames(accuracy.table) <- "Accuracy"
+
+knitr::kable(accuracy.table)
+```
+
+
+8. Provide a summary of your findings.  Your comments should address benefits and advantages for the different methods.    Which method has the best predictive accuracy?  Which provides the most interpretability or insight into quantifying factors?   In explaining your findings and insights provide graphs and tables that help quantify uncertainty and illustrate effects of the different characteristics.   (Using the training data and any of the models above do you reach similar conclusions as in Ch 14 of Gelman and Hill?  )   
+
+
+```{r}
+knitr::kable(accuracy.table)
+```
+Summary:
+
+First of all, we can find that for different methods, the importances of variables may change. Some variables may be less important in one method than another. But in general, the partyid3, ideo, state, age and race are important in predicting voting results for every method.
+
+Secondly, different methods have slightly differences in  accuracy and interpretability :
+a) The advantages of tree method are trees are simple to apply and interpret. Besides, trees can easily handle qualitative predictors without the need to create dummy variables and be displayed graphically. However, trees have high variability and sometimes less accurate than other methods.
+b) Compared to tree methods, the random forest method has lower variability.
+c) Compared to random forest method, boosting builds a mean function that uses multiple trees where the growth takes into account the previous trees. In boosting methods, smaller trees can be used. 
+d) Compared to the above three methods, BART can use Baysian approach to control complexity in building tree process. Besides, tress can be of different sizes and the number of trees can be large without overfitting.
+e) Compared to BART, GAM has the following advantages: Allow flexible non-linear functions of predictors.Do not need to try various transformations or polynomials to capture relationships; May be used to suggest parametric models. Nonlinear functions can extend to multiple predictors for interactions, but soon run into curse of dimensionality; Nonlinear fits can lead to improved prediction; Additive functions may be more interpretable
+
+Thirdly, the GAM method has the best predictive accuracy and provides the most interpretability or insight into quantifying factors.
+
+At last, none of the models above reach similar conclusions as in CH14 of Gelman and Hill. Gelman and Hill's models focus on variables such as income, gender, age, state and race.However, in our models, we reach the conclusion that partyid3 and ideo are more important in predicting voting results than gender and income.
+
+
+
+
+
+
+
+
+
+
+
+
