@@ -1,0 +1,660 @@
+---
+title: "Logistic Regression"
+author: "Muyao Sun"
+date: "February 10, 2017"
+output:
+  pdf_document: default
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(arm)
+library(foreign)
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+# add other libraries
+```
+
+
+We will explore logistic regression with the National Election Study data from Gelman & Hill (GH).  (See Chapter 4.7 for descriptions of some of the variables and 5.1 of GH for initial model fitting). 
+
+
+```{r data, echo=FALSE}
+# Data are at http://www.stat.columbia.edu/~gelman/arm/examples/nes
+
+nes <- read.dta("nes5200_processed_voters_realideo.dta",
+                   convert.factors=F)
+# Data cleaning
+# remove NA's for key variables first
+nes1992 = nes %>% filter(!is.na(black)) %>%
+              filter(!is.na(female)) %>%
+              filter(!is.na(educ1)) %>%
+              filter(!is.na(age)) %>%
+              filter(!is.na(state)) %>%
+              filter(!is.na(income)) %>%
+              filter(presvote %in% 1:2) %>% 
+# limit to year 1992 and add new varialbes
+              filter(year == 1992) %>%
+              mutate(female = gender -1,
+                     black=race ==2,
+# recode vote so that vote = 1 corresponds to a vote for Bush, and vote=0 is a vote for Clinton, where votes for Ross Perot were removed earlier                     
+                     vote = presvote == 2)
+```
+
+1. Summarize the data for 1992 noting which variables have missing data.  Which variables are categorical but are coded as numerically? 
+
+The following variables have missing data:
+```{r}
+# Variables with missing data
+names(which(apply(nes1992, 2, function(col) any(is.na(col)))))
+```
+
+Notice that all variables are coded as numeric and none are coded as factors:
+
+```{r}
+# Variables coded as numeric
+names(which(apply(nes1992,2,function(col) is.numeric(col))))
+
+# Variables coded as categorical
+names(which(apply(nes1992,2,function(col) is.factor(col))))
+```
+
+Dispite being coded as numerical, most of these variables are categorical. Only year, weight1, weight2, weight3, age, age_10, age_sq_10 appear to be numerical variables.
+
+2. Fit the logistic regression  to estimate the probability that an individual would vote Bush (Republican) as a function of income and provide a summary of the model.
+
+```{r}
+mdl1 <- glm(vote ~ income, family=binomial(link="logit"), data=nes1992)
+summary(mdl1)
+```
+
+
+
+3. Obtain a point estimate and create a 95% confidence interval for the odds ratio for voting Republican for a rich person (income category 5) compared to a poor person (income category 1). *Hint this is more than a one unit change; calculate manually and then show how to modify the output from confint*. Provide a sentence interpreting the result.
+
+As derived in class, we can find the odds ratio simply by multiplying the coefficient by the difference in the covariates between rich and poor (so, 4-1) and exponentiating. We can also apply this to the lower and upper bounds of the 95% confidence interval (which we find by calculating the standard error).
+
+```{r}
+#calculate manually
+beta <- coef(summary(mdl1))[,'Estimate']
+
+std_error <- coef(summary(mdl1))[,'Std. Error']
+CI_lb <- beta - qnorm(0.975,0,1) * std_error
+CI_ub <- beta + qnorm(0.975,0,1) * std_error
+
+table <- matrix(c(
+  exp(CI_lb[2]*(5-1)),
+  exp(beta[2]*(5-1)),
+  exp(CI_ub[2]*(5-1))
+))
+rownames(table) <- c("2.5%","Odds ratio","97.5%")
+colnames(table) <- "Odds ratio between rich and poor"
+kable(table)
+```
+
+We can also calculate the confidence interval of the odds ratio by using the `confint` function:
+
+```{r}
+#calculate from Confint
+exp(confint(mdl1)["income",] * (5-1))
+```
+
+
+4.  Obtain fitted probabilities and 95% confidence intervals for the income categories using the `predict` function.  Use `ggplot` to recreate the plots in figure 5.1 of Gelman & Hill.  *write a general function?*
+
+```{r}
+
+point = with(nes1992, data.frame( income = seq(min(income), max(income))))
+preds = predict(mdl1, point, type = "link", se.fit = TRUE)
+upr = preds$fit + (qnorm(0.975,0,1) * preds$se.fit)
+lwr = preds$fit - (qnorm(0.975,0,1) * preds$se.fit)
+fit = preds$fit
+#Upper bound for 95% confidence interval
+upper_level = mdl1$family$linkinv(upr)
+#Lower bound for 95% confidence interval
+lower_level = mdl1$family$linkinv(lwr)
+#Fitted values for each categories
+fitted_value = mdl1$family$linkinv(fit)
+
+table <- cbind(lower_level, fitted_value, upper_level)
+rownames(table) <- sort(unique(nes1992$income))
+kable(table)
+```
+
+
+
+```{r}
+nes1992$vote = as.numeric(nes1992$vote) # Need this for plotting
+
+#First plot in figure5.1
+
+ggplot(nes1992, aes(x = income, y = vote)) + 
+  geom_jitter(width = 0.2, height = 0.04, size=.3) +
+  stat_smooth(method="glm", 
+              method.args=list(family="binomial"), 
+              se=FALSE, 
+              col="black",
+              size=.5,
+              fullrange = TRUE) +
+  stat_smooth(method="glm", 
+              method.args=list(family="binomial"), 
+              se=FALSE, 
+              col="black",
+              size=1.5,
+              fullrange = FALSE) +
+  ylab("Pr (Republican vote)")+
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  scale_x_continuous(name="Income", 
+                     limits=c(-1, 7), 
+                     breaks=-1:7,
+                     labels=c("","","1\n(poor)","2","3","4","5\n(rich)","",""))
+
+```
+
+
+
+```{r}
+#Second plot in figure5.1
+
+ggplot(nes1992, aes(x = income, y = vote)) + 
+  geom_jitter(width = 0.2, height = 0.04, size=.3) +
+  stat_smooth(method="glm", 
+              method.args=list(family="binomial"), 
+              se=TRUE, 
+              col="black",
+              fullrange = TRUE) +
+  ylab("Pr (Republican vote)")+
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  scale_x_continuous(name="Income", 
+                     limits=c(0.5, 5.5), 
+                     breaks=1:5,
+                     labels=c("1\n(poor)","2","3","4","5\n(rich)"))
+
+```
+
+
+
+
+5.  What does the residual deviance or any diagnostic plots suggest about the model?  (provide code for p-values and output and plots) 
+
+```{r}
+pvalue = pchisq(mdl1$deviance, mdl1$df.residual, lower=FALSE)
+par(mfrow=c(2,2))
+plot(mdl1)
+```
+For the residual plot, if we can access to large enough dataset, the residuals should look like standardized residuals in linear model; However, the dataset for votes in 1992 is not that large, we consider the residuals varying in (-1.5,2) is an acceptable range. Also, there is not clear curve pattern in the residual plot. Two outliers with residuals larger than 1.5 are denoted as outliers.
+
+Since the deviation residual is not required to follow a normal distribution, we can only know one outlier 51 is diagnosed.
+
+Usually scale-location plot is used to identify heteroscedasticity. However, logistic regression is much heteroscedastic by its nature. 
+
+In the leverage plot, we are able to find out two outliers, which are same with the outliers found in residual plot.
+
+6. Create a new data set by the filtering and mutate steps above, but now include years between 1952 and 2000.
+
+```{r}
+
+# Data cleaning
+# remove NA's for key variables first
+nes52_00 = nes %>% filter(!is.na(black)) %>%
+              filter(!is.na(female)) %>%
+              filter(!is.na(educ1)) %>%
+              filter(!is.na(age)) %>%
+              filter(!is.na(state)) %>%
+              filter(!is.na(income)) %>%
+              filter(presvote %in% 1:2) %>% 
+# add new varialbes
+
+              filter(year >= 1952, year <= 2000) %>%
+              mutate(female = gender -1,
+                     black=race ==2,
+# recode vote so that vote = 1 corresponds to a vote for Bush, and vote=0 is a vote for Clinton, where votes for Ross Perot were removed earlier                     
+                     vote = presvote == 2)
+
+```
+
+
+7. Fit a separate logistic regression for each year from 1952 to 2000, using the `subset` option in `glm`,  i.e. add `subset=year==1952`.  For each find the 95% Confidence interval for the odds ratio of voting republican for rich compared to poor for each year in the data set from 1952 to 2000.
+
+```{r message=FALSE}
+mdl2 <- lapply(unique(nes52_00$year), function(y) 
+  glm(vote ~ income, 
+      family=binomial(link="logit"), 
+      subset=year==y,
+      data=nes52_00)
+)
+
+beta <- sapply(mdl2, function(m) exp(coef(m)['income']*(5-1)))
+CI <- t(sapply(mdl2, function(m) exp(confint(m)["income",] * (5-1))))
+
+odds <- data.frame(CI[,1],beta,CI[,2])
+rownames(odds) <- unique(nes52_00$year)
+colnames(odds) <- c("2.5%","Odds ratio","97.5%")
+kable(round(odds,2),caption="Confidence intervals for odds ratio\nof rich compared to poor")
+```
+
+8.  Using `ggplot` plot the confidence intervals over time similar to the display in Figure 5.4.
+```{r}
+
+odds <- odds %>%
+  mutate(year = unique(nes52_00$year)) %>%
+  mutate(coef = sapply(mdl2, function(m) coef(m)['income']))%>%
+  mutate(ste = sapply(mdl2, function(m) se.coef(m)['income']))
+
+colnames(odds) <- c("lb","ratio","ub","year","coefficient","stderror")
+
+ggplot(odds, aes(x=year, y=coefficient)) +
+  geom_point() +
+  geom_errorbar(aes(ymax = coefficient + stderror, ymin=coefficient - stderror), width=.1) + 
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  geom_hline(yintercept=0,linetype=2) + 
+  ylab("Coefficient of income")+
+  ggtitle("Confidence intervals of income coefficients over time")
+
+```
+
+
+9. Fit a logistic regression using income and year as a factor  with an interaction i.e. `income*factor(year)` to the data from 1952-2000.  Find the log odds ratio for income for each year by combining parameter estimates and show that these are the same as in the respective individual logistic regression models fit separately to the data for each year.
+
+Note: since this problem asks for the "log odds ratio for income" and not the "log oods ratio of income *for rich compared to poor*" we do not need to multiply the coefficients by $5-1=4$.
+
+```{r}
+# Fit over the entire range
+mdl3 <- glm(vote ~ income*factor(year), 
+            family=binomial(link="logit"), 
+            data=nes52_00)
+
+# Get the columns corresponding to the interaction terms
+id_interact <- which(sapply(names(mdl3$coefficients), function(x) grepl("income:factor",x)))
+
+# For the full model (with all years), sum contributions from income and income*year
+logodds_ratio_all <- (mdl3$coefficients['income'] + c(0,mdl3$coefficients[id_interact]))
+
+# For the individual models, just look at income
+logodds_ratio_ind <- sapply(mdl2, function(df) df$coefficients['income'])
+
+table <- cbind(logodds_ratio_all,logodds_ratio_ind)
+rownames(table) <- unique(nes52_00$year)
+colnames(table) <- c("All years regression","Individual years regression")
+kable(table,caption="Log Odds Ratio by Year")
+```
+
+
+10.  Create a plot of fitted probabilities and confidence intervals as in question 4, with curves for all years in the same plot. 
+
+```{r}
+# Fit for individual years
+ mdl3_byyear <- lapply(unique(nes52_00$year), function(y) 
+   glm(vote ~ income*year, 
+       family=binomial(link="logit"), 
+       subset=year==y,
+       data=nes52_00)
+ )
+
+#Since we use ggplot2 in question 4, do we need to change these two plots in ggplot2 here?
+#do we want to label them or something?
+curve (invlogit(mdl3_byyear[[1]]$coef[1] + mdl3_byyear[[1]]$coef[2]*x), 1, 5, ylim=c(-.01,1.01),
+         xlim=c(0,6), xaxt="n", xaxs="i", mgp=c(2,.5,0),
+         ylab="Pr (Bush vote)", xlab="Income Level", lwd=3)
+
+for(i in 1:length(mdl3_byyear)){
+  curve (invlogit(mdl3_byyear[[i]]$coef[1] + mdl3_byyear[[i]]$coef[2]*x), 1, 5, ylim=c(-.01,1.01),
+         xlim=c(0,6),lwd=3, add = T)
+  curve (invlogit(mdl3_byyear[[i]]$coef[1] + mdl3_byyear[[i]]$coef[2]*x), -2, 8, lwd=.5, add=T)
+
+}
+
+  axis (1, 1:5, mgp=c(2,.5,0))
+  mtext ("(poor)", 1, 1.5, at=1, adj=.5)
+  mtext ("(rich)", 1, 1.5, at=5, adj=.5)
+  points (jitter (nes52_00$income, 1), jitter (as.numeric(nes52_00$vote), .16), pch=20, cex=.05)
+```
+```{r}
+
+curve (invlogit(mdl3_byyear[[1]]$coef[1] + mdl3_byyear[[1]]$coef[2]*x), .5, 5.5, ylim=c(-.01,1.01),
+         xlim=c(0,6), xaxt="n", xaxs="i", mgp=c(2,.5,0),
+         ylab="Pr (Bush vote)", xlab="Income Level", lwd=2)
+
+
+for(i in 1:length(mdl3_byyear)){
+  
+pos = sim(mdl3_byyear[[i]])
+  curve (invlogit(mdl3_byyear[[i]]$coef[1] + mdl3_byyear[[i]]$coef[2]*x), .5, 5.5, ylim=c(-.01,1.01),
+         xlim=c(0,6), add=T)
+  for (j in 1:10){
+    curve (invlogit(pos@coef[j,1] + pos@coef[j,2]*x), col="gray", lwd=.5, add=T)
+  }
+  curve (invlogit(mdl3_byyear[[i]]$coef[1] + mdl3_byyear[[i]]$coef[2]*x), add=T)
+
+  
+  }
+  axis (1, 1:5, mgp=c(2,.5,0))
+  mtext ("(poor)", 1, 1.5, at=1, adj=.5)
+  mtext ("(rich)", 1, 1.5, at=5, adj=.5)
+  points (jitter (nes52_00$income, 1), jitter (as.numeric(nes52_00$vote), .16), pch=20, cex=.05)
+```
+
+
+11.  Return to the 1992 year data. Filter out rows of `nes1992` with NA's in the variables below and  recode as factors using the levels in parentheses:
+    + gender (1 = "male", 2 = "female"), 
+    + race (1 = "white", 2 = "black", 3 = "asian", 4 = "native american", 5 = "hispanic", 7 = "other"), 
+    + education ( use `educ1` with levels 1 = "no high school", 2 = "high school graduate", 3 = "some college", 4 = "college graduate"), 
+    + party identification (`partyid3` with levels 1= "democrats", 2 = "independents", 3 = "republicans", 4 = "apolitical" , and 
+    + political ideology (`ideo` 1 = "liberal", 2 ="moderate", 3 = "conservative") 
+
+```{r}
+# Filter NAs from given variables
+rows_na <- apply(is.na(select(nes1992, gender, race, educ1, partyid3, ideo)),1,any)
+nes1992_clean <- nes1992[!rows_na,]
+
+nes1992_clean$gender <- factor(nes1992_clean$gender, 
+                               levels=1:2,
+                               labels=c("male", "female"))
+
+nes1992_clean$race <- factor(nes1992_clean$race, 
+                               levels=c(1,2,3,4,5,7),
+                               labels=c("white","black","asian",
+                                        "native american","hispanic","other"))
+
+nes1992_clean$educ1 <- factor(nes1992_clean$educ1, 
+                               levels=1:4,
+                               labels=c("no high school","high school graduate",
+                                        "some college","college graduate"))
+
+nes1992_clean$ideo <- factor(nes1992_clean$ideo, 
+                               levels=c(1,3,5),
+                               labels=c("liberal","moderate","conservative"))
+
+
+nes1992_clean$partyid3 <- factor(nes1992_clean$partyid3, 
+                               levels=c(1, 2, 3, 9),
+                               labels=c("democrats","independents","republicans","apolitical"))
+
+```
+
+
+12.  Fit a logistic regression model predicting support for Bush given the the variables above and income as predictors and also consider interactions among the predictors. 
+
+```{r}
+nes1992_clean2 <- select(nes1992_clean, vote, income, gender, race, educ1, partyid3, ideo)
+
+mdl4 <- glm(vote ~ ., 
+            family=binomial(link="logit"), 
+            data=nes1992_clean2)
+summary(mdl4)
+
+#include interactions in new model
+mdl5 <- glm(vote ~ .+ race*gender+ideo*partyid3+ income*partyid3, 
+            family=binomial(link="logit"), 
+            data=nes1992_clean2)
+summary(mdl5)
+```
+
+
+13.  Plot binned residuals using the function `binnedplot` from package `arm` versus some of the additional predictors in the 1992 dataframe.  Are there any suggestions that the mean or distribution of residuals is different across the levels of the other predictors and that they should be added to the model?  (Provide plots and any other summaries to explain).   
+
+```{r}
+binnedplot(fitted(mdl4), resid(mdl4,type="response"))
+binnedplot(fitted(mdl5), resid(mdl5, type="response"))
+```
+
+Plots the average residual and the average fitted value for each category, 95% of all values should fall within the confidence interval.
+
+```{r}
+binnedplot(as.numeric(nes1992_clean$region), resid(mdl4), xlab = "Region")
+binnedplot(as.numeric(nes1992_clean$state), resid(mdl4), xlab = "State")
+occup.na = is.na(nes1992_clean$occup1)
+binnedplot(as.numeric(nes1992_clean$occup1[!occup.na]), resid(mdl4)[!occup.na], xlab = "Occupation")
+rel.na = is.na(nes1992_clean$religion)
+binnedplot(as.numeric(nes1992_clean$religion)[!rel.na], resid(mdl4)[!rel.na], xlab = "Religion")
+```
+
+The variables for region and religion should be added to the model, since the mean residuals are different accross levels for these. The plots of the response vs. these variables show that there is a significant difference on voting decisions between levels.
+
+```{r}
+mosaicplot(vote~ region, data = nes1992_clean)
+mosaicplot(vote~ religion, data = nes1992_clean)
+```
+
+After adding the two new variables, we can see that region is actually not significant when other predictors are also taken into account. However, religion has a very low p-value, suggesting that it is extremely unlikely that its effect on the response happened by chance.
+
+Based on these results, we can remove the variables that are not significant: income, education, and region.
+
+```{r}
+nes1992_clean3 = nes1992_clean[!rel.na,]
+nes1992_clean3 = select(nes1992_clean, vote, income, gender, race, educ1, partyid3, ideo, region, religion)
+mdl6 = glm(vote ~ .+race*gender+ideo*partyid3+income*partyid3- educ1 -region, 
+            family=binomial(link="logit"), 
+            data=nes1992_clean3)
+summary(mdl6)
+```
+
+
+14.  Evaluate and compare the different models you fit.  Consider coefficient estimates (are they stable across models) and standard errors (any indications of identifiability problems), residual plots and deviances.
+
+
+```{r}
+#need to compare coeff and std error 
+anova(mdl6,test = "Chi")
+summary(mdl1)
+summary(mdl6)
+plot(mdl1)
+plot(mdl6)
+binnedplot(fitted(mdl1), resid(mdl1,type="response"))
+binnedplot(fitted(mdl6), resid(mdl6,type="response"))
+```
+
+We start by comparing the model in question 2 (mdl1) and the model in question 13 (mdl6) . 
+
+1.  mdl6 is a better fitted model compared to mld1, which can be identified from the deviance analysis.In the deviance analysis, we can figure out that all of the predictors, except for "gender" and "partyid3:ideo", can improve the fitness of the model at 95% significance level.
+2.  Transforming from mdl1 to mdl6, the coefficient estimation of income is not stable. Although the number didn't change a lot, the significance is largely reduced. This result indicates income maybe not a good predictor for vote. The effect of income on vote can be explained by other factors.
+3.  Based on the residual plots, we can tell that for both of the two models, there are a fwe outliers and high leverage points.
+4.  In the binned plot, most of the points are within the 95% confidence bound, which is a good signal for fitness.  
+
+
+Now let's examine the stability of the coefficient estimates for all our models with interaction terms (models 4, 5, and 6). Note there are some NAs because each model has different covariates. The estimates are fairly stable.
+
+```{r}
+coef4 <- data.frame(variable=names(coef(mdl4)),coef(mdl4), stringsAsFactors = FALSE)
+coef5 <- data.frame(variable=names(coef(mdl5)),coef(mdl5), stringsAsFactors = FALSE)
+coef6 <- data.frame(variable=names(coef(mdl6)),coef(mdl6), stringsAsFactors = FALSE)
+
+coef_join <- full_join(full_join(coef4,coef5, by="variable"), coef6, by="variable")
+colnames(coef_join) <- c("Variable","Model 4","Model 5","Model 6")
+kable(coef_join, caption="Coefficient estimates accross models")
+```
+
+We can also look at the stability of the standared errors. These, too, are fairly stable. Notice there are a few interaction terms with very large standard errors. This is likely do to the limited number of observations in these categories.
+
+For example, there are only a few asian females in our dataset:
+
+```{r}
+nes1992_clean3 %>% 
+  filter(gender=="female",race=="asian") %>%
+  summarize(female_asian_count = n())
+```
+
+```{r}
+stderr4 <- data.frame(variable=rownames(summary(mdl4)$coefficients),
+                    summary(mdl4)$coefficients[,"Std. Error"], 
+                    stringsAsFactors = FALSE)
+stderr5 <- data.frame(variable=rownames(summary(mdl5)$coefficients),
+                    summary(mdl5)$coefficients[,"Std. Error"], 
+                    stringsAsFactors = FALSE)
+stderr6 <- data.frame(variable=rownames(summary(mdl6)$coefficients),
+                    summary(mdl6)$coefficients[,"Std. Error"], 
+                    stringsAsFactors = FALSE)
+
+stderr_join <- full_join(full_join(stderr4,stderr5, by="variable"), stderr6, by="variable")
+
+colnames(stderr_join) <- c("Variable","Model 4","Model 5","Model 6")
+kable(stderr_join, caption="Standard errors accross models")
+```
+
+
+
+15.  Compute the error rate of your model (see GH page 99) and compare it to the error rate of the null model.  We can define a function for the error rate as:
+```{r error.rate, include=FALSE}
+error.rate = function(pred, true) {
+  mean((pred > .5 & true == 0) | (pred < .5 & true == 1))
+}
+```
+
+```{r}
+p <- mean(mdl6$y) 
+null.error <- min(p, 1-p)
+
+model.error = error.rate(mdl6$fitted.values, mdl6$y)
+
+model.error
+null.error
+```
+
+Our model's error rate is significantly smaller than the null model's, and is fairly accurate, predicting almost 90% accurately.
+
+16.  For your chosen model, discuss and compare the importance of each input variable in the prediction.   Provide a neatly formatted table of odds ratios  and 95\% confidence intervals.
+```{r}
+anova(mdl6,test = "Chi")
+summary(mdl6)
+
+#For each predictor, the odds ratio is calculated as one unit change of this input
+beta1 <- coef(summary(mdl6))[,'Estimate']
+Beta1 = data.frame(exp(beta1))
+std1 <- coef(summary(mdl6))[,'Std. Error']
+CI_lb1 <- beta1 - qnorm(0.975,0,1) * std1
+CI_ub1 <- beta1 + qnorm(0.975,0,1) * std1
+CI_lb1 = data.frame(exp(CI_lb1))
+CI_ub1 = data.frame(exp(CI_ub1))
+t = cbind(Beta1,CI_lb1,CI_ub1)
+colnames(t) <- c("odds ratio","2.5%","97.5%")
+kable(round(t,4))
+```
+
+
+Based on the deviance test, income, race, partyid3, ideo are important for the prediction at 99.9% significance level. Religion, interation of gender and race are important for the prediction at 99% significance level. The interaction of income and partyid3 is important for the prediction at 95% significance level. Gender alone and interation of partyid3 and ideo is not important for the prediction.
+
+Based on the regression result, the following inputs are important in prediction at more than 95% significance level:intercept,raceblack, partyid3independents,partyid3republicans, ideomoderate, ideoconservative, religion, genderfemale:racehispanic, income:partyid3republicans.
+
+
+
+17.  Provide a paragraph summarizing your findings and interpreting key coefficients (providing ranges of supporting values from above) in terms of the odds of voting for Bush.  Attempt to write this at a level that readers of the New York Times Upshot column could understand.  
+
+
+Based on the National Election Study data in 1992, we can find some interesting results about the election. First of all, if we divide people into five groups by income(1=0–16th percentile, 2= 17–33rd percentile, 3=34–67th percentile, 4=68–95th percentile, 5=96–100th percentile), for republicans, one level increasing of income will decrease the probability by 0.5399 times. Secondly, the probability of black people voting for bush is only 0.173 of the probability of other races. Thirdly, the party identification is an influential factor. People of independence party are more likely to vote for Bush 11 times bigger than people not in this party. And people in republican party are more likely to vote for Bush 880 times bigger than people not in this party. Considering people’s political ideology, moderate people are more likely to vote for Bush 3.88 times bigger than people in other ideologies group. Conservative people are more likely to vote for Bush 8.6 times more than people in other ideologies group. For female, the race of Hispanic females are more likely to vote for Bush by 21.5 times bigger than other races female. 
+
+
+
+
+18.  In the above analysis, we removed missing data.  Repeat the data cleaning steps, but remove only the rows where the response variable, `presvote` is missing.  Recode all of the predictors (including income) so that there is a level that is 'missing' for any NA's for each variable.  How many observations are there now compared to the complete data?
+```{r}
+nes1992_clean4 = nes%>% filter(year == 1992)  %>% filter(!is.na(presvote))
+nes1992_clean4 = select(nes1992_clean4, presvote, income, gender, race, educ1, partyid3, ideo, region, religion)
+summary(nes1992_clean4)
+nes1992_clean4$gender <- factor(nes1992_clean4$gender, 
+                               levels=1:2,
+                               labels=c("male", "female"))
+
+nes1992_clean4$race <- factor(nes1992_clean4$race, 
+                               levels=c(1,2,3,4,5,7),
+                               labels=c("white","black","asian",
+                                        "native american","hispanic","other"))
+
+nes1992_clean4$educ1 <- factor(nes1992_clean4$educ1, 
+                               levels=1:4,
+                               labels=c("no high school","high school graduate",
+                                        "some college","college graduate"))
+
+nes1992_clean4$ideo <- factor(nes1992_clean4$ideo, 
+                               levels=c(1,3,5),
+                               labels=c("liberal","moderate","conservative") )
+
+
+
+nes1992_clean4$partyid3 <- factor(nes1992_clean4$partyid3, 
+                               levels=c(1, 2, 3, 9),
+                               labels=c("democrats","independents","republicans","apolitical"))
+nes1992_clean4$religion <- factor(nes1992_clean4$religion, 
+                               levels=c(1, 2, 3, 4),
+                               labels=c("1","2","3","4"))
+nes1992_clean4$income <- addNA(nes1992_clean4$income)
+nes1992_clean4$race <- addNA(nes1992_clean4$race)
+nes1992_clean4$educ1 <- addNA(nes1992_clean4$educ1)
+nes1992_clean4$ideo <- addNA(nes1992_clean4$ideo)
+nes1992_clean4$partyid3 <- addNA(nes1992_clean4$partyid3)
+nes1992_clean4$religion <-addNA(nes1992_clean4$religion)
+
+dim(nes1992_clean4)[1]
+dim(nes%>% filter(year == 1992))[1]-dim(nes1992_clean4)[1]
+
+```
+There are now 1498 (449 less than the original).
+
+19. For any of above variables, suggest possible reasons why they may be missing.
+
+The variables might be missing because of people forgot to fill out the survey properly, which is bound to happen in any large scale survey. Another reason for missing values could be that the people surveyed did not identify with the options presented (e.g. in the religion or race sections), or because they do not feel comfortable answering (e.g. income). 
+
+20.  Rerun your selected model and create a table of parameter estimates and confidence intervals for the odds ratios.  You should have an additional coefficient for any categorical variable with missing data.   Comment on any changes in results for the model including the missing data and the previous one that used only complete data.
+
+```{r}
+
+
+mdl6 = glm(vote ~ .+race*gender+ideo*partyid3+income*partyid3- educ1 -region, 
+            family=binomial(link="logit"), 
+            data=nes1992_clean3)
+
+
+nes1992_clean4 = nes1992_clean4 %>%
+   filter(presvote %in% 1:2) %>%
+   mutate(vote = presvote == 2)
+nes1992_clean4$income = as.numeric(nes1992_clean4$income)
+mdl7 = glm(vote ~ .+race*gender+ideo*partyid3+income*partyid3- educ1 -region - presvote, 
+            family=binomial(link="logit"), control = list(maxit = 50),
+            data=nes1992_clean4)
+
+summary(mdl7)
+
+#For each predictor, the odds ratio is calculated as one unit change of this input
+beta1 <- coef(summary(mdl6))[,'Estimate']
+Beta1 = data.frame(exp(beta1))
+std1 <- coef(summary(mdl6))[,'Std. Error']
+CI_lb1 <- beta1 - qnorm(0.975,0,1) * std1
+CI_ub1 <- beta1 + qnorm(0.975,0,1) * std1
+CI_lb1 = data.frame(exp(CI_lb1))
+CI_ub1 = data.frame(exp(CI_ub1))
+t = cbind(Beta1,CI_lb1,CI_ub1)
+colnames(t) <- c("odds ratio","2.5%","97.5%")
+kable(round(t,4))
+
+beta2 <- coef(summary(mdl7))[,'Estimate']
+Beta2 = data.frame(exp(beta2))
+std2 <- coef(summary(mdl7))[,'Std. Error']
+CI_lb2 <- beta2 - qnorm(0.975,0,1) * std2
+CI_ub2 <- beta2 + qnorm(0.975,0,1) * std2
+CI_lb2 = data.frame(exp(CI_lb2))
+CI_ub2 = data.frame(exp(CI_ub2))
+tt = cbind(Beta2,CI_lb2,CI_ub2)
+colnames(tt) <- c("odds ratio","2.5%","97.5%")
+kable(round(tt,4))
+```
+
+
+
+Comment:
+Comparing the model including missing data to the previous one, we can draw the following two conclusions. First of all, almost all of the estimated coefficients are reduced slightly. But their significance levels are not changed. Secondly, except for the raceNA, the NA dummy variables of other predictors are not significantly important in predicting vote. 
+Therefore, including the missing data of race may help to improve the fitness of the model. For the people who don't want to provide their race information during the survey, they are more likely to vote for Bush.
+
+
+
+
+
+
+
