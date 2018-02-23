@@ -1,0 +1,643 @@
+---
+title: 'Regularized Linear Regression (Frequentist and Bayesian)'
+author: 'Muyao Sun'
+date: "March 27"
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+---
+
+1.  Complete Exercise 7 in ISLR
+
+(a) Likelihood of data
+
+\begin{equation} \label{eq1}
+\begin{split}
+L(Y|X,\beta) & = \prod _{i=1}^n p(Y_i|X,\beta) \\
+ & = \prod _{i=1}^n \frac{1}{\sigma \sqrt{2\pi}}exp(-\frac{Y_i - (\beta_0 + \sum_{j=1}^px_{ij}\beta_j)}{2\sigma^2})\\
+ & = (\frac{1}{\sigma \sqrt{2\pi}})^n exp(-\frac{1}{2\sigma^2} \sum_{i=1}^n (Y_i - (\beta_0 + \sum_{j=1}^px_{ij}\beta_j)))
+\end{split}
+\end{equation}
+
+
+(b) Posterior distribution with double-exponential prior
+
+\begin{equation} \label{eq2}
+\begin{split}
+p(\beta|X,Y) & \propto p(Y|X,\beta)p(\beta) \\
+& \propto (\frac{1}{\sigma \sqrt{2\pi}})^n exp(-\frac{1}{2\sigma^2} \sum_{i=1}^n (Y_i - (\beta_0 + \sum_{j=1}^px_{ij}\beta_j))) \frac{1}{2b}exp(-\frac{|\beta|}{b})\\
+& \propto (\frac{1}{\sigma \sqrt{2\pi}})^n \frac{1}{2b}  exp(-\frac{1}{2\sigma^2} \sum_{i=1}^n (Y_i - (\beta_0 + \sum_{j=1}^px_{ij}\beta_j)) - \frac{1}{b}\sum_{j=1}^p |\beta_j|)\\
+& \propto exp(-\frac{1}{2\sigma^2} \sum_{i=1}^n (Y_i - (\beta_0 + \sum_{j=1}^px_{ij}\beta_j)) - \frac{1}{b}\sum_{j=1}^p |\beta_j|)
+\end{split}
+\end{equation}
+
+(c)
+Since the Lasso estimate is $min _{\beta} \sum_{i=1}^n (Y_i - \beta_0 - \sum_{j=1}^p \beta_jx_{ij})^2 + \lambda \sum_{j=1}^p |\beta_j|$, the mode of posterior distribution in (b) can be derived from:
+
+\begin{equation} \label{eq3}
+\begin{split}
+max_{\beta} logp(\beta|X,Y) & \propto max -\frac{1}{2\sigma^2} \sum_{i=1}^n (Y_i - (\beta_0 + \sum_{j=1}^px_{ij}\beta_j)) - \frac{1}{b}\sum_{j=1}^p |\beta_j|\\
+& \propto min \frac{1}{2\sigma^2}(\sum_{i=1}^n (Y_i - (\beta_0 + \sum_{j=1}^px_{ij}\beta_j)) + \frac{2\sigma^2}{b}\sum_{j=1}^p |\beta_j|)\\
+& \propto min \sum_{i=1}^n (Y_i - \beta_0 - \sum_{j=1}^p \beta_jx_{ij})^2 + \lambda \sum_{j=1}^p |\beta_j|\  where\ \lambda = \frac{2\sigma^2}{b}  
+\end{split}
+\end{equation}
+
+
+(d) Posterior distribution with normal prior
+
+\begin{equation} \label{eq4}
+\begin{split}
+p(\beta|X,Y) & \propto p(Y|X,\beta)p(\beta) \\
+& \propto (\frac{1}{\sigma \sqrt{2\pi}})^n exp(-\frac{1}{2\sigma^2} \sum_{i=1}^n (Y_i - (\beta_0 + \sum_{j=1}^px_{ij}\beta_j))) \prod_{j=1}^p \frac{1}{\sqrt{2\pi c}}exp(-\frac{\beta_j^2}{2c})\\
+& \propto (\frac{1}{\sigma \sqrt{2\pi}})^n exp(-\frac{1}{2\sigma^2} \sum_{i=1}^n (Y_i - (\beta_0 + \sum_{j=1}^px_{ij}\beta_j))) (\frac{1}{\sqrt{2\pi c}})^p exp(-\frac{1}{2c} \sum_{j=1}^p \beta_j^2)\\
+& \propto exp(-\frac{1}{2\sigma^2} \sum_{i=1}^n (Y_i - (\beta_0 + \sum_{j=1}^px_{ij}\beta_j)) - \frac{1}{2c} \sum_{j=1}^p \beta_j^2)
+\end{split}
+\end{equation}
+
+(e)
+Since the Ridge estimate is $min _{\beta} \sum_{i=1}^n (Y_i - \beta_0 - \sum_{j=1}^p \beta_jx_{ij})^2 + \lambda \sum_{j=1}^p \beta_j^2$, the mode and mean of posterior distribution in (d) can be derived from:
+
+\begin{equation} \label{eq5}
+\begin{split}
+max_{\beta} logp(\beta|X,Y) & \propto max -\frac{1}{2\sigma^2} \sum_{i=1}^n (Y_i - (\beta_0 + \sum_{j=1}^px_{ij}\beta_j)) - \frac{1}{2c} \sum_{j=1}^p \beta_j^2\\
+& \propto min \frac{1}{2\sigma^2} (\sum_{i=1}^n (Y_i - (\beta_0 + \sum_{j=1}^px_{ij}\beta_j)) + \frac{2\sigma^2}{2c} \sum_{j=1}^p \beta_j^2)\\
+& \propto min\sum_{i=1}^n (Y_i - \beta_0 - \sum_{j=1}^p \beta_jx_{ij})^2 + \lambda \sum_{j=1}^p \beta_j^2\  where\ \lambda = \frac{\sigma^2}{c}  
+\end{split}
+\end{equation}
+
+
+2.  For $p=2$ create a plot showing the contours of the log likelihood surface  and contours of the log density of $\beta_1$ and $\beta_2$ for the case of independent Cauchy priors   (Student t densities with 1 degree of freedom).  For the same likelihood, make a plots for  the Lasso or Ridge priors as Figure 6.7   Comment on whether you think this will lead to variable selection under the MAP estimate.
+
+```{r}
+library(mvtnorm)
+library(smoothmest)
+```
+
+
+```{r}
+logLikelihood <- function(y, x, beta) {
+  sum((y - x %*% beta)^2)
+}
+
+#generate data
+set.seed(18)
+
+sigma <- matrix(c(1,-.5,-.5,1),nrow=2,byrow=TRUE)
+mu <- rep(0,2)
+beta.true <- matrix(c(1,3),nrow=2)
+nsim <- 10
+
+X <- rmvnorm(nsim, mu, sigma)
+Y <- X %*% beta.true + rnorm(nsim)
+
+
+beta1 = seq(-3,6,length.out = 50)
+beta2 = seq(-3,6,length.out = 50)
+beta = as.matrix(expand.grid(beta1, beta2))
+bb = matrix(apply(beta, 1, function(v) logLikelihood(Y,X,v)),
+       nrow = length(beta1)) 
+```
+
+
+
+
+```{r}
+#Cauchy prior
+set.seed(18)
+cauchy_con <- function(beta){
+  sum(log(1+beta^2))
+}
+beta_c1 = sort(rcauchy(50,0,1))
+beta_c2 = sort(rcauchy(50,0,1))
+beta_c = as.matrix(expand.grid(beta_c1, beta_c2))
+cc = matrix(apply(beta_c, 1, function(v) cauchy_con(v)),
+       nrow = length(beta_c1)) 
+
+# Likelihood contours
+par(pty="s")
+contour(beta1, beta2, bb, 
+        xlab="Beta1", ylab="Beta2",
+        main="Contours with Cauchy prior",
+        levels=c(10,15,20,25),
+        xlim=c(-5,5),
+        ylim=c(-5,5),
+        drawlabels=FALSE,
+        axes=TRUE,
+        col='red')
+abline(h=0)
+abline(v=0)
+
+# Constrant contours
+contour(beta_c1, beta_c2, cc,
+        levels = c(0.5,1,1.5),
+        drawlabels=FALSE,
+        add=T,
+        col="blue")
+
+legend("bottomleft", c("Likelihood","Constraint"), lty=c(1,1), col=c("red","blue"))
+```
+
+
+
+```{r}
+#Ridge Prior
+ridge_con <- function(beta){
+  sum(beta^2)
+}
+beta_r1 = sort(rnorm(50,0,1))
+beta_r2 = sort(rnorm(50,0,1))
+beta_r = as.matrix(expand.grid(beta_r1, beta_r2))
+rr = matrix(apply(beta_r, 1, function(v) ridge_con(v)),
+       nrow = length(beta_r1)) 
+
+# Likelihood contours
+par(pty="s")
+contour(beta1, beta2, bb, 
+        xlab="Beta1", ylab="Beta2",
+        main="Contours with Ridge prior",
+        levels=c(10,15,20,25),
+        xlim=c(-5,5),
+        ylim=c(-5,5),
+        drawlabels=FALSE,
+        axes=TRUE,
+        col='red')
+abline(h=0)
+abline(v=0)
+
+# Constraint contours
+contour(beta_r1, beta_r2, rr, 
+        levels = c(0.5,1,1.5),
+        drawlabels=FALSE,
+        add=T,
+        col="blue")
+
+legend("bottomleft", c("Likelihood","Constraint"), lty=c(1,1), col=c("red","blue"))
+```
+
+```{r}
+#Lasso Prior
+lasso_con <- function(beta){
+  sum(abs(beta))
+}
+beta_l1 = sort(rdoublex(50,0,1))
+beta_l2 = sort(rdoublex(50,0,1))
+beta_l = as.matrix(expand.grid(beta_l1, beta_l2))
+ll = matrix(apply(beta_l, 1, function(v) lasso_con(v)),
+       nrow = length(beta_l1)) 
+
+# Likelihood contours
+par(pty="s")
+contour(beta1, beta2, bb, 
+        xlab="Beta1", ylab="Beta2",
+        main="Contours with Lasso prior",
+        levels=c(10,15,20,25),
+        xlim=c(-5,5),
+        ylim=c(-5,5),
+        drawlabels=FALSE,
+        axes=TRUE,
+        col='red')
+abline(h=0)
+abline(v=0)
+
+# Constrant contours
+contour(beta_l1, beta_l2, ll, 
+        levels = c(0.5,1,1.5),
+        drawlabels=FALSE,
+        add=T,
+        col="blue")
+
+legend("bottomleft", c("Likelihood","Constraint"), lty=c(1,1), col=c("red","blue"))
+```
+
+The "sharp" edges of the Lasso constraints (which we could think of as being caused by non-differentiability at 0 of a double exponential prior) are the constraints mostly likely to do variable selection, since the constraint isocurves and the likelihood isocurves are more likely to be tangent on one of the axes. The Cauchy prior is probably more likely to do variable selection than the ridge, but it's really the non-differentiability of the lasso that induces the variable selection.
+
+3.  Refer to Exercise 9 in ISLR and homework 4 with the College data.
+    a. split the data into a 50% training set and a 50% test set.
+```{r setup, echo=FALSE}
+suppressMessages(library(ISLR))
+suppressMessages(library(arm))
+suppressMessages(library(ggplot2))
+suppressMessages(library(dplyr))
+suppressMessages(library(GGally))
+suppressMessages(library(monomvn))
+suppressMessages(library(glmnet))
+suppressMessages(library(BAS))
+library(knitr)
+# post on piazza for additional packages if there are wercker build errors due to missing packages
+```
+
+```{r data, echo = FALSE}
+data(College)
+College = College %>% 
+  mutate(college = rownames(College)) %>%
+  mutate(Elite = factor(Top10perc > 50)) %>%
+  mutate(Elite = 
+           recode(Elite, 'TRUE' = "Yes", 'FALSE'="No")) %>%
+  dplyr::select(c(-Accept, -Enroll))
+```
+
+```{r setseed}
+# do not change this; for a break google `8675309`
+set.seed(123)
+n = nrow(College)
+n.train = floor(.5*n)
+train = sample(1:n, size=n.train, replace=FALSE)
+College.train = College[train,]
+College.test = College[-train,]
+```
+
+```{r, echo= FALSE}
+rmse_table = matrix(NA,10, 1)
+coverage_table = matrix(NA, 10, 1)
+rmse = function(y, ypred) {
+  rmse = sqrt(mean((y - ypred)^2))
+  return(rmse)
+}
+
+College.train <- as.tbl(College.train)
+College.test <- as.tbl(College.test)
+
+College.train$college <- as.factor(College.train$college)
+College.test$college <- as.factor(College.test$college)
+
+levels(College.train$college)<- c(levels(College.train$college), levels(College.test$college))
+levels(College.test$college) <-levels(College.train$college)
+col_num <- names(College.train)[sapply(College.train,is.numeric)]
+col_cat <- names(College.train)[sapply(College.train,is.factor)]
+
+```
+
+
+b. Using the recommended transformations from HW4 for the normal regression model with your  most complex model (no variable selection), obtain the RMSE for predicting the number of applications (not the transformed response) for the test data under OLS.
+    
+```{r}
+X.train = model.matrix(log(Apps)~(.-college)*(.-college)-1,data = College.train)
+X.train<-X.train[,-1] ##to get rid of PrivateNo
+
+X.test = model.matrix(log(Apps)~(.-college)*(.-college)-1,data = College.test)
+X.test<-X.test[,-1] ##to get rid of PrivateNo
+
+mdl_test <- lm(log(Apps) ~ (. -college)*(. -college), data=College.train)
+mdl_test$xlevels["college"]<- levels(College$college)
+predicted = exp(predict(mdl_test,newdata = College.test))
+rmse_table[1] = rmse(College.test$Apps,predicted)
+  CI = exp(predict(mdl_test,newdata = College.test, interval = "predict"))
+coverage_table[1] = sum(cbind( CI[,2] <= College.test$Apps & CI[,3] >= College.test$Apps ))/nrow(College.test)
+```
+   
+c. Using the same variables as above,  obtain the RMSE for the test data using ridge regression with $\lambda$ chosen by cross-validation (the cross-validation for choosing $\lambda$ should only use the training data).
+
+
+```{r}
+ridge  = cv.glmnet(X.train, log(College.train$Apps),family="gaussian", alpha=0)
+rmse_table[2] = rmse(College.test$Apps,exp(predict(ridge$glmnet.fit, X.test,s= ridge$lambda.min)))
+```
+
+
+d. Using the same variables as above, obtain the RMSE for the test data using lasso with $\lambda$ chosen by cross-validation.  Report on which variables are selected by lasso.
+    
+```{r}
+lars = cv.glmnet(X.train, log(College.train$Apps),family="gaussian", alpha=1)
+rmse_table[3] = rmse(College.test$Apps,exp(predict(lars$glmnet.fit, X.test, s= lars$lambda.min)))
+     #Variables not set to 0
+names(data.frame(X.train))[which(coef(lars, s= lars$lambda.min)!=0)-1]
+
+```
+
+
+e.  Using the same variables, obtain the RMSE for the test data using one of the mixtures of $g$ priors under BMA and the best predictive model.  Report on  which variables are viewed as important under the BMA model.
+
+
+```{r}
+
+bas = bas.lm(log(Apps)~(.-college)*(.-college),
+                  data=College.train,
+                  prior="ZS-null",
+                  alpha=nrow(College.train),    # g = n
+                  modelprior=uniform(),
+                  method="MCMC", MCMC.iterations = 1000, thin = 20
+             )
+
+# BMA
+predicted = predict(bas, College.test, estimator = "BMA", se.fit = TRUE)
+rmse_table[4] = rmse(College.test$Apps, exp(predicted$fit))
+
+pred.CI =try(exp(confint(predicted,parm="pred")), FALSE)
+coverage_table[4] = try(sum(cbind(pred.CI[,1] <= College.test$Apps & pred.CI[,2] >= College.test$Apps ))/nrow(College.test))
+```
+
+```{r}
+##Variables with 95%CI not including 0 with BMA
+names(data.frame(X.train))[which(coef(bas, estimator="BMA")$probne0>.95)-1]
+```
+
+
+```{r}
+#BPM
+predicted = predict(bas, College.test, estimator = "BPM", se.fit = TRUE)
+rmse_table[5] = rmse(College.test$Apps, exp(predicted$fit))
+
+pred.CI = exp(confint(predicted,parm="pred"))
+coverage_table[5] = sum(cbind( pred.CI[,1] <= College.test$Apps & pred.CI[,2] >= College.test$Apps ))/nrow(College.test)
+```
+
+
+```{r}
+##Variables whose coefficients have posterior marginal probability !=0 >95%
+names(data.frame(X.train))[which(coef(bas, estimator="BPM")$probne0>.95)-1]
+```
+
+
+f.  Using the same variables, obtain the RMSE for the test data using blasso with and without`RJ=TRUE`.    Report on  which variables are viewed as important under the  Baysian Lasso with variable selection.
+    
+Set reversible jump to be false first.
+    
+```{r, cache = TRUE}
+# RJ = FALSE
+
+#very slow; can change T later (default is 1000)
+X.train.scaled<- scale(X.train)
+X.test.scaled <- scale(X.test, scale = attr(X.train.scaled,"scaled:scale"), attr(X.train.scaled,"scaled:center"))
+
+# Run model
+blasso.f = blasso(X.train.scaled, log(College.train$Apps), RJ=FALSE, T=300)
+ 
+  p = sapply(1:length(blasso.f$mu), function(i) exp(blasso.f$mu[i] + X.test.scaled %*% blasso.f$beta[i,]))
+ predicted = t(apply(p, 1, function(x) quantile(x, c(.025, .975, .5))))
+ ####idk what
+##predicted = sapply(c(.025, .975, .5), function(k) exp(quantile(blasso.f$mu, probs=k) + X.test %*% apply(blasso.f$beta, 2, function(x) quantile(x, probs=k))))
+
+ rmse_table[6] = rmse(College.test$Apps, predicted[,3])
+ coverage_table[6] = sum(cbind( predicted[,1] <= College.test$Apps & predicted[,2] >= College.test$Apps ))/nrow(College.test)
+```
+
+```{r}
+##Variables with 95%CI not including 0 with RJ=F
+CI= t(apply(blasso.f$beta, 2, function(x) quantile(x, probs=c(.025, .975))))
+names(data.frame(X.train))[which(!(CI[,1] <= 0 & CI[,2]>=0))]
+```
+
+
+Set reversible jump to be true.
+
+```{r, cache = TRUE}
+### RJ = TRUE
+
+blasso.t = blasso(X.train.scaled, log(College.train$Apps), RJ=TRUE, T=300)
+
+p = sapply(1:length(blasso.t$mu), function(i) exp(blasso.t$mu[i] + X.test.scaled %*% blasso.t$beta[i,]))
+predicted = t(apply(p, 1, function(x) quantile(x, c(.025, .975, .5))))
+
+##predicted = sapply(c(.025, .975, .5), function(k) exp(quantile(blasso.t$mu, probs=k) + X.test %*% apply(blasso.t$beta, 2, function(x) quantile(x, probs=k))))
+
+rmse_table[7] = rmse(College.test$Apps, predicted[,3])
+coverage_table[7] = sum(cbind( predicted[,1] <= College.test$Apps & predicted[,2] >= College.test$Apps ))/nrow(College.test)
+
+#variables w/ P(B!=0)>.95 for RJ=T
+names(data.frame(X.train))[which(summary(blasso.t)$bn0>.95)]
+```
+
+    
+h.  Using the same variables, obtain the RMSE for the test data using the horseshoe prior,  `bhs` in `library(monomvn)`, with and without`RJ=TRUE`.    Report on  which variables are viewed as important under the  horseshoe with variable selection.
+
+```{r, cache = TRUE}
+# RJ = TRUE
+hs.f = bhs(X.train.scaled, log(College.train$Apps), RJ=FALSE, T=100)
+ p = sapply(1:length(hs.f$mu), function(i) exp(hs.f$mu[i] + X.test.scaled %*% hs.f$beta[i,]))
+ predicted = t(apply(p, 1, function(x) quantile(x, c(.025, .975, .5))))
+##predicted = sapply(c(.025, .975, .5), function(k) exp(quantile(hs.f$mu, probs=k) + X.test %*% apply(hs.f$beta, 2, function(x) quantile(x, probs=k))))
+
+ rmse_table[8] = rmse(College.test$Apps, predicted[,3])
+  coverage_table[8] = sum(cbind( predicted[,1] <= College.test$Apps & predicted[,2] >= College.test$Apps ))/nrow(College.test)
+```
+  
+```{r, cache = TRUE}  
+hs.t = bhs(X.train.scaled, log(College.train$Apps),  RJ=TRUE, T=100)
+ p = sapply(1:length(hs.t$mu), function(i) exp(hs.t$mu[i] + X.test.scaled %*% hs.t$beta[i,]))
+ predicted = t(apply(p, 1, function(x) quantile(x, c(.025, .975, .5))))
+##predicted = sapply(c(.025, .975, .5), function(k) exp(quantile(hs.t$mu, probs=k) + X.test %*% apply(hs.t$beta, 2, function(x) quantile(x, probs=k))))
+
+   rmse_table[9] = rmse(College.test$Apps, predicted[,3])
+   coverage_table[9] = sum(cbind( predicted[,1] <= College.test$Apps & predicted[,2] >= College.test$Apps ))/nrow(College.test)
+
+ CI= t(apply(hs.f$beta, 2, function(x) quantile(x, probs=c(.025, .975))))
+names(data.frame(X.train))[which(!(CI[,1] <= 0 & CI[,2]>=0))]
+names(data.frame(X.train))[which(summary(hs.t)$bn0>.95)]
+```
+    
+g.  For the above methods that can produce prediction intervals, determine what percent of the test observations are included inside 95% prediction intervals and report a table of coverage values
+    
+```{r}
+names =c("OLS", "Ridge (cross-validation)", "Lasso (cross-validation", "Bayesian Model Averaging", "Best Predictive Model", "Bayesian Lasso without RJ", "Bayesian Lasso with RJ","Horseshoe without RJ","Horseshoe with RJ", "Robust Horseshoe")
+rownames(coverage_table)<- names
+colnames(coverage_table)<-"Coverage"
+kable(coverage_table)
+```
+    
+h.  (plan ahead for this)   Use Student $t$ errors either with JAGS or the monomvm package and a prior that has heavier tails than the error distribution to fit a model to the training data. Report the RMSE and coverage on the test data.
+    
+```{r, cache = TRUE}
+##change T
+ rbhs = blasso(X.train.scaled, log(College.train$Apps), case="hs",
+                theta = .125, RJ=FALSE, verb=0, T=100)
+p = sapply(1:length(rbhs$mu), function(i) exp(rbhs$mu[i] + X.test.scaled %*% rbhs$beta[i,]))
+ predicted = t(apply(p, 1, function(x) quantile(x, c(.025, .975, .5))))
+
+ ##predicted = sapply(c(.025, .975, .5), function(k) exp(quantile(rbhs$mu, probs=k) + X.test %*% apply(rbhs$beta, 2, function(x) quantile(x, probs=k))))
+
+ rmse_table[10] = rmse(College.test$Apps, predicted[,3])
+```
+
+The final RMSE's are:
+
+```{r}
+rownames(rmse_table)<- names
+colnames(rmse_table)<-"RMSE"
+kable(round(rmse_table,3))
+```
+
+    
+
+4.  For the college data, the negative binomial model seemed to provide the best model.   Using the representation of the Negative Binomial as a gamma mixture of Poissons (HW4),   modify the JAGS code from lab so that the response has a Poisson distribution with mean `lambda[i]` and that `lambda[i]` has a gamma distriubtion as in problem 20 of HW4.   Using scaled predictors, implement one of the scale mixtures of normal priors (lasso  horseshoe, or other) in JAGS. Using JAGS to obtain predictions, report the RMSE and coverage of credible intervals for the test data.   
+
+
+ Form input for JAGS.
+
+
+```{r}
+### JAGS input data
+
+# Training data
+X = model.matrix(Apps ~ ., data=select(College.train,-college))
+X = X[,-1]  # drop intercept
+n.train <- dim(X)[1]
+scaled.X = scale(X) / sqrt(n.train-1)
+
+# Test data
+X.test = model.matrix(Apps ~ ., data=select(College.test,-college))
+X.test = X.test[,-1]  # drop intercept
+n.test <- dim(X.test)[1]
+
+# Create a data list with inputs for WinBugs
+data = list(Y = College.train$Apps,
+            X = cbind(scaled.X),
+            n = n.train,
+            X.test = X.test,
+            n.test = n.test,
+            p = ncol(X),
+            scales = attr(scaled.X, "scaled:scale") * sqrt(n.train-1),
+            Xbar = attr(scaled.X, "scaled:center")
+)
+```
+
+We will do Bayesian Ridge regression.
+
+```{r}
+rr.model <- function() {
+
+  for (i in 1:n) {
+      mu[i] <- exp( inprod(X[i,], beta.s)  + alpha0 )
+      lambda[i] ~ dgamma(theta, theta/mu[i])
+      Y[i] ~ dpois(lambda[i])
+  }
+  
+  for (i in 1:n.test) {
+      mu.test[i] <- exp( inprod(X.test[i,], beta)  + beta0 )
+      lambda.test[i] ~ dgamma(theta, theta/mu.test[i])
+      Y.test[i] ~ dpois(lambda.test[i])
+  }
+  
+  theta ~ dgamma(1.0E-6, 1.0E-6)
+  alpha0  ~ dnorm(0, 1.0E-10)
+  
+
+  for (j in 1:p) {
+      prec.beta[j] <- lambda.beta
+      beta.s[j] ~ dnorm(0, prec.beta[j])
+  }
+  
+  # Cauchy Prior on beta
+  lambda.beta ~ dgamma(.5, .5)
+
+  for (j in 1:p) {
+      beta[j] <- beta.s[j]/scales[j]   # rescale
+  }
+  
+  # transform intercept to original units (uncenter)
+  beta0 <- alpha0 - inprod(beta, Xbar)
+}
+```
+
+
+```{r}
+set.seed(444)
+parameters = c("beta.s", "beta", "beta0", "lambda.beta","theta","lambda","alpha0","mu","Y.test")
+
+suppressMessages(library(R2jags))
+rr.sim = jags(data, inits=NULL, 
+              parameters.to.save=parameters,
+              model.file=rr.model,  
+              n.iter = 600,
+              n.burnin = 100)
+
+theta = as.mcmc(rr.sim$BUGSoutput$sims.matrix)  # create an MCMC object 
+
+```
+
+Look at some trace plots:
+
+```{r}
+plot(theta[,"theta"])
+```
+
+
+```{r}
+plot(theta[,"lambda[1]"])
+```
+
+
+
+```{r}
+n.samp <- dim(theta)[1]
+
+# Get the Y predictions on the test data
+idx_Y.test <- which(sapply(colnames(theta), function(s) grepl("Y.test\\[", s)))
+Y.test.pred <- theta[,idx_Y.test]
+
+# True values
+Y.test.true <- College.test$Apps
+
+# Compute the RMSE for EACH posterior sample and look at the distribution
+rmse.nb <- apply(Y.test.pred,1, function(yhat) sqrt(mean((yhat - Y.test.true)^2)))
+
+hist(rmse.nb)
+abline(v=mean(rmse.nb), col='red')
+legend("topright", c("Distribution","Mean RMSE"), lty=c(1,1), col=c("black","red"))
+```
+
+The coverage is now easy to calculate:
+
+```{r}
+# Coverage
+ci <- t(apply(Y.test.pred, 2, function(x) quantile(x, probs=c(0.025, 0.975))))
+
+coverage.nb = sum(ci[,1] < Y.test.true & Y.test.true < ci[,2])/n.test
+coverage.nb
+```
+
+5.  Provide a summary paragraph comment on the results obtained in 3 and 4.  How accurately can you predict the number of applications?  Is there much difference in RMSEs among these methods? Is there much difference in coverage among these methods?  If time permits, implement predictive checks with the complete data using coverage and comment on the methods.  
+For your recommended model, provide CI for all of the parameters, and pick 5 (or more) of the most important variables and provide a paragraph that provides an interpretation of the parameters (and intervals) that can be provided to a university admissions officer about which variables increase admissions. 
+
+```{r}
+cover.nb = matrix(coverage.nb,1,1)
+
+rownames(cover.nb)<- "Negative Binomial"
+colnames(cover.nb)<-"Coverage"
+
+coverage.data = rbind(coverage_table,cover.nb)
+
+Mrmse.nb = matrix(mean(rmse.nb),1,1)
+rownames(Mrmse.nb)<- "Negative Binomial"
+colnames(Mrmse.nb)<-"RMSE"
+
+rmse.data = rbind(rmse_table,Mrmse.nb)
+
+
+kable(coverage.data)
+kable(round(rmse.data,3))
+
+```
+
+Based on the above two tables of RMSE and Coverage, we can draw the following conclusions. First of all, there may exist unstable coefficients in OLS and simple Baysian models and we can improve the predictability by using Ridge mthods or Lasso methods.  Secondly, RMSE and coverage rate are like two sides of a coin. We can use methods like Ridge or Lasso to improve the RMSE results but the cost is the decreasing of coverage rate. Third, there is no much difference between Baysian Lasso method and Baysian horseshoe method. The RMSE and coverage rate result of those two methods are basically the same.
+
+The accuracy of predicting the number of applications can be shown in the  coverage rate table. For example,  for the OLS model, the accuracy of predicting the number of applications is 0.96 in 95% significance level. 
+
+We can divide the 11 models into 5 groups: OLS, ridge and Lasso models, simple Baysian models, Baysian Lasso or Horseshoe models, and negative binomial model.The RMSE and coverage rate are basically the same within each group, but they are different across groups.
+
+
+
+```{r}
+library(LPR)
+
+X = model.matrix(Apps ~ ., data=select(College,-college))
+X = X[,-1]
+
+lr = LPR(x = X, y = log(College$Apps), lambda2 = 1/length(College.train$Apps), B = 100 ,type.boot = "residual", alpha = 0.05)
+
+
+lrcoef = cbind(data.frame(lr$Beta.LPR),t(data.frame(lr$interval.LPR)))
+
+colnames(lrcoef) = c("Beta","2.5%","97.5")
+
+knitr::kable(lrcoef)
+
+```
+
+
+
+I would recommend the Ridge or Lasso regression method. Because this method is easy to apply, compared to Baysian methods, and it can reduce the RMSE dramatically.
+The five most important variables are : PrivateYes, S.F.Ratio, EliteYes, Grad.Rate and Top10perc. The PrivateYes parameter tells us that private universities are receiveing `-(exp(-0.1438)-1)*100` percent applications lower than public universities.S.F.Ratio implies that one unit increase in Study/Faculty ratio, the applications to that university would increase `(exp(0.128)-1)*100` percent. EliteYes implies that for the universities where new students from top 10% of H.S. class are higher than 50% would receive `(exp(0.067)-1)*100` percent higher applications than universites that are not.Grad.Rate implies one unit increase in graduation rate, the applications to that university would increase `(exp(0.017)-1)*100` percent. Tope10perc implies one unit increase in the percentage of new students from top 10% of H.S. class would lead to `-(exp(-0.0144)-1)*100` percent decrease in applications.  
+    
+
+   
